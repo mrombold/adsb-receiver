@@ -217,8 +217,8 @@ func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte 
 	msg[10] = byte(lonInt >> 8)
 	msg[11] = byte(lonInt)
 	
-	// Altitude (encoded: (altitude + 1000) / 25)
-	altEncoded := uint16((altitude + 1000) / 25)
+	// Altitude 
+	altEncoded := int16((altitude / 25) + 40)  // CORRECT
 	msg[12] = byte(altEncoded >> 4)
 	msg[13] = byte((altEncoded&0x0F)<<4) | 0x09 // 0x09 = airborne + valid altitude
 	
