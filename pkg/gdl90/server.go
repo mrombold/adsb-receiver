@@ -27,76 +27,93 @@ func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, port 
 	}
 }
 
-// Serve starts the GDL90 server
 func (s *Server) Serve() error {
 	// Listen on all interfaces
 	addr, err := net.ResolveUDPAddr("udp4", s.port)
 	if err != nil {
 		return err
 	}
-	
+
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	
-	// Enable broadcast
+
+	// Big write buffer for bursts
 	conn.SetWriteBuffer(1024 * 1024)
-	
+
 	log.Printf("GDL90 server listening on %s", s.port)
-	
-	// Broadcast to the local subnet
+
+	// Broadcast to the local subnet (unchanged)
 	broadcastAddr, _ := net.ResolveUDPAddr("udp4", "192.168.10.255:4000")
-	
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-	
-	for range ticker.C {
-		hasGPS := s.positionMgr.HasPosition()
-		
-		// Send heartbeats
-		heartbeat := MakeHeartbeat(hasGPS, false)
-		if _, err := conn.WriteToUDP(heartbeat, broadcastAddr); err != nil {
-			log.Printf("Error sending heartbeat: %v", err)
-		}
-		
-		stratuxHeartbeat := MakeStratuxHeartbeat(hasGPS, false)
-		if _, err := conn.WriteToUDP(stratuxHeartbeat, broadcastAddr); err != nil {
-			log.Printf("Error sending Stratux heartbeat: %v", err)
-		}
-		
-		// Send ownship position if we have GPS
-		if pos, ok := s.positionMgr.GetPosition(); ok {
-			ownship := MakeOwnshipReport(pos.Lat, pos.Lon, int(pos.Altitude*3.28084), int(pos.Track), int(pos.Speed))
-			conn.WriteToUDP(ownship, broadcastAddr)
-			
-			ownshipAlt := MakeOwnshipGeoAltitude(int(pos.Altitude * 3.28084))
-			conn.WriteToUDP(ownshipAlt, broadcastAddr)
-		}
-		
-		// Send traffic reports
-		aircraft := s.trafficMgr.GetAircraft()
-		sentCount := 0
-		for _, ac := range aircraft {
-			// Only send if we have valid position
-			if ac.Lat != 0 && ac.Lon != 0 {
+
+	// Tickers: heartbeat 1 Hz; GPS & traffic 10 Hz
+	heartbeatTicker := time.NewTicker(1 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	gpsTicker := time.NewTicker(100 * time.Millisecond)
+	defer gpsTicker.Stop()
+
+	trafficTicker := time.NewTicker(100 * time.Millisecond)
+	defer trafficTicker.Stop()
+
+	lastTrafficLog := time.Now()
+
+	for {
+		select {
+		case <-heartbeatTicker.C:
+			hasGPS := s.positionMgr.HasPosition()
+
+			// Send heartbeats (1 Hz)
+			if _, err := conn.WriteToUDP(MakeHeartbeat(hasGPS, false), broadcastAddr); err != nil {
+				log.Printf("Error sending heartbeat: %v", err)
+			}
+			if _, err := conn.WriteToUDP(MakeStratuxHeartbeat(hasGPS, false), broadcastAddr); err != nil {
+				log.Printf("Error sending Stratux heartbeat: %v", err)
+			}
+
+		case <-gpsTicker.C:
+			// Ownship @ 10 Hz
+			if pos, ok := s.positionMgr.GetPosition(); ok {
+				altFeet := int(pos.Altitude * 3.28084)
+
+				if _, err := conn.WriteToUDP(MakeOwnshipReport(
+					pos.Lat, pos.Lon, altFeet, int(pos.Track), int(pos.Speed),
+				), broadcastAddr); err != nil {
+					log.Printf("Error sending ownship: %v", err)
+				}
+				if _, err := conn.WriteToUDP(MakeOwnshipGeoAltitude(
+					altFeet,
+				), broadcastAddr); err != nil {
+					log.Printf("Error sending ownship geo alt: %v", err)
+				}
+			}
+
+		case <-trafficTicker.C:
+			// Traffic @ 10 Hz
+			aircraft := s.trafficMgr.GetAircraft()
+			sentCount := 0
+			for _, ac := range aircraft {
+				if ac.Lat == 0 && ac.Lon == 0 {
+					continue
+				}
 				icao := parseICAO(ac.ICAO)
-				traffic := MakeTrafficReport(icao, ac.Lat, ac.Lon, ac.Altitude, ac.Track, ac.Speed)
-				if _, err := conn.WriteToUDP(traffic, broadcastAddr); err != nil {
+				if _, err := conn.WriteToUDP(MakeTrafficReport(
+					icao, ac.Lat, ac.Lon, ac.Altitude, ac.Track, ac.Speed,
+				), broadcastAddr); err != nil {
 					log.Printf("Error sending traffic: %v", err)
 				} else {
 					sentCount++
 				}
 			}
-		}
-		
-		if sentCount > 0 {
-			log.Printf("Sent %d traffic reports", sentCount)
+			// Throttle this log to once per second (so 10 Hz doesn't spam)
+			if sentCount > 0 && time.Since(lastTrafficLog) >= time.Second {
+				log.Printf("Sent %d traffic reports", sentCount)
+				lastTrafficLog = time.Now()
+			}
 		}
 	}
-	
-	return nil
 }
 
 // parseICAO converts hex ICAO string to uint32

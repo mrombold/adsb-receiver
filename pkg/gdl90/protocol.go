@@ -1,6 +1,5 @@
 package gdl90
 
-
 // Message IDs
 const (
 	MsgHeartbeat          = 0x00
@@ -8,17 +7,15 @@ const (
 	MsgOwnshipGeoAltitude = 0x0B
 	MsgTrafficReport      = 0x14
 	MsgUplinkData         = 0x07
-	MsgStratuxHeartbeat   = 0xCC // For Garmin Pilot compatibility
+	MsgStratuxHeartbeat   = 0xCC
 )
 
 // prepareMessage adds CRC and frame delimiters
 func prepareMessage(msg []byte) []byte {
-	// Calculate CRC
 	crc := computeCRC(msg)
 	msg = append(msg, byte(crc&0xFF), byte(crc>>8))
 	
-	// Escape special characters and add frame delimiters
-	escaped := []byte{0x7E} // Frame start
+	escaped := []byte{0x7E}
 	for _, b := range msg {
 		if b == 0x7E || b == 0x7D {
 			escaped = append(escaped, 0x7D, b^0x20)
@@ -26,7 +23,7 @@ func prepareMessage(msg []byte) []byte {
 			escaped = append(escaped, b)
 		}
 	}
-	escaped = append(escaped, 0x7E) // Frame end
+	escaped = append(escaped, 0x7E)
 	return escaped
 }
 
@@ -39,26 +36,34 @@ func computeCRC(msg []byte) uint16 {
 	return crc
 }
 
+// encodeLatLon encodes latitude or longitude as 24-bit two's complement
+// Per GDL90 spec: encoded = coordinate * (2^23 / 180)
+func encodeLatLon(coord float64) [3]byte {
+	// Scale factor: 2^23 / 180 = 46603.377778
+	val := int32(coord * 46603.377778)
+	
+	// Extract 24 bits (will automatically handle two's complement for negative)
+	return [3]byte{
+		byte((val >> 16) & 0xFF),
+		byte((val >> 8) & 0xFF),
+		byte(val & 0xFF),
+	}
+}
+
 // MakeHeartbeat creates a standard GDL90 heartbeat message
 func MakeHeartbeat(hasGPS, hasAHRS bool) []byte {
 	msg := make([]byte, 7)
 	msg[0] = MsgHeartbeat
 	
-	// Status byte 1
 	if hasGPS {
-		msg[1] |= 0x80 // GPS position valid
+		msg[1] |= 0x80
 	}
-	
-	// Status byte 2
 	if hasAHRS {
-		msg[2] |= 0x01 // AHRS valid
+		msg[2] |= 0x01
 	}
 	
-	// Timestamp (placeholder - can add actual GPS time later)
 	msg[3] = 0
 	msg[4] = 0
-	
-	// Message counts (placeholder)
 	msg[5] = 0
 	msg[6] = 0
 	
@@ -76,19 +81,102 @@ func MakeStratuxHeartbeat(hasGPS, hasAHRS bool) []byte {
 		msg[1] |= 0x01
 	}
 	
-	// Protocol version (1)
 	msg[1] |= (1 << 2)
 	
 	return prepareMessage(msg)
 }
 
+// MakeOwnshipReport creates an ownship position report
+func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte {
+	msg := make([]byte, 28)
+	msg[0] = MsgOwnshipReport
+	
+	// Status byte (0x01 = GPS valid)
+	msg[1] = 0x01
+	
+	// Reserved bytes 2-5
+	msg[2] = 0
+	msg[3] = 0
+	msg[4] = 0
+	msg[5] = 0
+	
+	// Latitude (24-bit two's complement)
+	latBytes := encodeLatLon(lat)
+	msg[6] = latBytes[0]
+	msg[7] = latBytes[1]
+	msg[8] = latBytes[2]
+	
+	// Longitude (24-bit two's complement)
+	lonBytes := encodeLatLon(lon)
+	msg[9] = lonBytes[0]
+	msg[10] = lonBytes[1]
+	msg[11] = lonBytes[2]
+	
+	// Altitude (12-bit): ((altitude_feet + 1000) / 25)
+	var altEncoded int16
+	if altitude < -1000 || altitude > 101350 {
+		altEncoded = 0xFFF
+	} else {
+		altEncoded = int16((altitude + 1000) / 25)
+	}
+	
+	msg[12] = byte(altEncoded >> 4)
+	msg[13] = byte((altEncoded & 0x0F) << 4)
+	
+	// Misc byte (TT=01, true track)
+	msg[13] |= 0x01
+	
+	// NIC (4 bits) and NACp (4 bits)
+	msg[14] = 0xA8
+	
+	// Horizontal velocity (12-bit, knots)
+	speedEncoded := uint16(speed) & 0xFFF
+	msg[15] = byte(speedEncoded >> 4)
+	msg[16] = byte((speedEncoded & 0x0F) << 4)
+	
+	// Vertical velocity (12-bit, 64 fpm)
+	msg[16] |= 0x00
+	msg[17] = 0x00
+	
+	// Track/Heading (360/256 degrees)
+	trackEncoded := uint8(float64(track) * 256.0 / 360.0)
+	msg[18] = trackEncoded
+	
+	// Emitter category (1 = light aircraft)
+	msg[19] = 1
+	
+	// Call sign (8 bytes)
+	callsign := "OWNSHIP "
+	copy(msg[20:28], []byte(callsign))
+	
+	return prepareMessage(msg)
+}
+
+// MakeOwnshipGeoAltitude creates ownship geometric altitude message
+func MakeOwnshipGeoAltitude(altitude int) []byte {
+	msg := make([]byte, 5)
+	msg[0] = MsgOwnshipGeoAltitude
+	
+	// Altitude in 5-foot increments (signed 16-bit)
+	altEncoded := int16(altitude / 5)
+	msg[1] = byte(altEncoded >> 8)
+	msg[2] = byte(altEncoded)
+	
+	// Vertical warning indicator
+	msg[3] = 0x00
+	
+	// Vertical figure of merit
+	msg[4] = 0x7F
+	
+	return prepareMessage(msg)
+}
 
 // MakeTrafficReport creates a traffic report message
 func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed int) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgTrafficReport
 	
-	// Traffic alert status (0 = no alert) and address type (0 = ADS-B with ICAO)
+	// Alert status and address type
 	msg[1] = 0x00
 	
 	// ICAO address (24 bits)
@@ -96,57 +184,57 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 	msg[3] = byte(icao >> 8)
 	msg[4] = byte(icao)
 	
-	// Latitude (encoded as integer)
-	latInt := int32(lat * 8388608.0 / 180.0)
-	msg[5] = byte(latInt >> 16)
-	msg[6] = byte(latInt >> 8)
-	msg[7] = byte(latInt)
+	// Latitude (24-bit two's complement)
+	latBytes := encodeLatLon(lat)
+	msg[5] = latBytes[0]
+	msg[6] = latBytes[1]
+	msg[7] = latBytes[2]
 	
-	// Longitude (encoded as integer)
-	lonInt := int32(lon * 8388608.0 / 180.0)
-	msg[8] = byte(lonInt >> 16)   // FIXED: was msg[9]
-	msg[9] = byte(lonInt >> 8)    // FIXED: was msg[10]
-	msg[10] = byte(lonInt)        // FIXED: was msg[11]
+	// Longitude (24-bit two's complement)
+	lonBytes := encodeLatLon(lon)
+	msg[8] = lonBytes[0]
+	msg[9] = lonBytes[1]
+	msg[10] = lonBytes[2]
 	
-	// Altitude: (alt/25) + 40 offset
-	var alt int16
+	// Altitude (12-bit): ((altitude_feet + 1000) / 25)
+	var altEncoded int16
 	if altitude < -1000 || altitude > 101350 {
-		alt = 0x0FFF
+		altEncoded = 0xFFF
 	} else {
-		alt = int16((altitude / 25) + 40)
+		altEncoded = int16((altitude + 1000) / 25)
 	}
-	msg[11] = byte((alt & 0xFF0) >> 4)
-	msg[12] = byte((alt & 0x00F) << 4)
 	
-	// Miscellaneous byte (lower 4 bits of msg[12])
-	// 0x01 = true track valid, 0x08 = airborne
-	msg[12] = msg[12] | 0x09
+	msg[11] = byte(altEncoded >> 4)
+	msg[12] = byte((altEncoded & 0x0F) << 4)
 	
-	// NIC (upper 4 bits) and NACp (lower 4 bits)
-	msg[13] = 0x88  // NIC=8, NACp=8
+	// Misc byte
+	msg[12] |= 0x09
 	
-	// Horizontal velocity (12-bit, in knots)
-	speedEncoded := uint16(speed) & 0x0FFF
-	msg[14] = byte((speedEncoded & 0xFF0) >> 4)
-	msg[15] = byte((speedEncoded & 0x00F) << 4)
+	// NIC and NACp
+	msg[13] = 0x88
 	
-	// Vertical velocity (12-bit, 64 fpm resolution) - set to 0
-	msg[15] = msg[15] | 0x08  // 0x800 >> 8
+	// Horizontal velocity (12-bit)
+	speedEncoded := uint16(speed) & 0xFFF
+	msg[14] = byte(speedEncoded >> 4)
+	msg[15] = byte((speedEncoded & 0x0F) << 4)
+	
+	// Vertical velocity
+	msg[15] |= 0x08
 	msg[16] = 0x00
 	
-	// Track (degrees / 1.4)
+	// Track/heading
 	trackEncoded := uint8(float64(track) * 256.0 / 360.0)
 	msg[17] = trackEncoded
 	
-	// Emitter category (1 = light aircraft)
+	// Emitter category
 	msg[18] = 1
 	
-	// Callsign (8 bytes, space-padded)
+	// Callsign (8 bytes)
 	for i := 19; i < 27; i++ {
 		msg[i] = ' '
 	}
 	
-	// Priority/emergency status
+	// Emergency status
 	msg[27] = 0
 	
 	return prepareMessage(msg)
@@ -186,82 +274,4 @@ var crcTable = [256]uint16{
 	0x7c26, 0x6c07, 0x5c64, 0x4c45, 0x3ca2, 0x2c83, 0x1ce0, 0x0cc1,
 	0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
 	0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0,
-}
-
-
-// MakeOwnshipReport creates an ownship position report
-func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte {
-	msg := make([]byte, 28)
-	msg[0] = MsgOwnshipReport
-	
-	// Status byte (airborne with valid position)
-	msg[1] = 0x09 // 0x08 = airborne, 0x01 = GPS valid
-	
-	// Address type (1 = non-ICAO)
-	msg[2] = 1
-	
-	// Address (can be zeros for ownship)
-	msg[3] = 0
-	msg[4] = 0
-	msg[5] = 0
-	
-	// Latitude (encoded as integer)
-	latInt := int32(lat * 8388608.0 / 180.0)
-	msg[6] = byte(latInt >> 16)
-	msg[7] = byte(latInt >> 8)
-	msg[8] = byte(latInt)
-	
-	// Longitude (encoded as integer)
-	lonInt := int32(lon * 8388608.0 / 180.0)
-	msg[9] = byte(lonInt >> 16)
-	msg[10] = byte(lonInt >> 8)
-	msg[11] = byte(lonInt)
-	
-	// Altitude 
-	altEncoded := int16((altitude / 25) + 40)  // CORRECT
-	msg[12] = byte(altEncoded >> 4)
-	msg[13] = byte((altEncoded&0x0F)<<4) | 0x09 // 0x09 = airborne + valid altitude
-	
-	// Misc byte
-	msg[14] = 0x01 // NIC = 1
-	
-	// NACp
-	msg[15] = 8
-	
-	// Horizontal velocity
-	speedEncoded := uint16(speed)
-	msg[16] = byte(speedEncoded >> 4)
-	msg[17] = byte((speedEncoded & 0x0F) << 4)
-	
-	// Vertical velocity (0 for stationary)
-	msg[18] = 0x80
-	
-	// Track/heading
-	trackEncoded := uint8(float64(track) * 256.0 / 360.0)
-	msg[19] = trackEncoded
-	
-	// Emitter category (1 = light aircraft)
-	msg[20] = 1
-	
-	// Callsign (8 bytes)
-	copy(msg[21:28], []byte("OWNSHIP"))
-	
-	return prepareMessage(msg)
-}
-
-// MakeOwnshipGeoAltitude creates ownship geometric altitude message
-func MakeOwnshipGeoAltitude(altitude int) []byte {
-	msg := make([]byte, 5)
-	msg[0] = MsgOwnshipGeoAltitude
-	
-	// Altitude in 5-foot increments, offset by 5000 feet
-	altEncoded := int16((altitude + 5000) / 5)
-	msg[1] = byte(altEncoded >> 8)
-	msg[2] = byte(altEncoded)
-	
-	// Vertical metrics (0x0001 = valid)
-	msg[3] = 0x00
-	msg[4] = 0x01
-	
-	return prepareMessage(msg)
 }
