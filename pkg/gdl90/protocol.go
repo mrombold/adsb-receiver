@@ -1,5 +1,10 @@
 package gdl90
 
+import (
+	"encoding/binary"
+	"time"
+)
+
 // Message IDs
 const (
 	MsgHeartbeat          = 0x00
@@ -37,12 +42,10 @@ func computeCRC(msg []byte) uint16 {
 }
 
 // encodeLatLon encodes latitude or longitude as 24-bit two's complement
-// Per GDL90 spec: resolution = 180.0 / 2^23 = 180.0 / 8388608.0
+// Per GDL90 spec: resolution = 180.0 / 2^23
 func encodeLatLon(coord float64) [3]byte {
-	// Encoding: value = coordinate / resolution = coordinate * (2^23 / 180)
 	val := int32(coord * 8388608.0 / 180.0)
 	
-	// Extract 24 bits (will automatically handle two's complement for negative)
 	return [3]byte{
 		byte((val >> 16) & 0xFF),
 		byte((val >> 8) & 0xFF),
@@ -59,18 +62,21 @@ func MakeHeartbeat(hasGPS, hasAHRS bool) []byte {
 	if hasGPS {
 		msg[1] |= 0x80  // GPS position valid
 	}
+	msg[1] |= 0x01  // UAT Initialized
 	
 	// Status Byte 2
 	if hasAHRS {
 		msg[2] |= 0x01  // AHRS valid
 	}
+	msg[2] |= 0x01  // UTC OK
 	
-	// Timestamp (not implemented, set to 0)
-	msg[3] = 0
-	msg[4] = 0
+	// Timestamp (seconds since midnight UTC)
+	now := time.Now().UTC()
+	secondsSinceMidnight := uint32(now.Hour()*3600 + now.Minute()*60 + now.Second())
+	msg[3] = byte((secondsSinceMidnight >> 16) & 0xFF)
+	binary.LittleEndian.PutUint16(msg[4:6], uint16(secondsSinceMidnight&0xFFFF))
 	
 	// Message counts
-	msg[5] = 0
 	msg[6] = 0
 	
 	return prepareMessage(msg)
@@ -88,6 +94,47 @@ func MakeStratuxHeartbeat(hasGPS, hasAHRS bool) []byte {
 	}
 	
 	msg[1] |= (1 << 2)  // Bit 2 set
+	
+	return prepareMessage(msg)
+}
+
+// MakeStratuxStatus creates the extended Stratux status message
+func MakeStratuxStatus(hasGPS, hasAHRS bool) []byte {
+	msg := make([]byte, 40)
+	msg[0] = 'S'
+	msg[1] = 'X'
+	msg[2] = 1  // Message version
+	msg[3] = 1  // Version code
+	
+	// Version string
+	copy(msg[4:8], []byte{1, 6, 0, 0})
+	
+	// Hardware revision
+	msg[8] = 0
+	
+	// Status flags
+	if hasGPS {
+		msg[9] |= 0x02
+	}
+	if hasAHRS {
+		msg[9] |= 0x01
+	}
+	
+	// Device short name (8 bytes)
+	copy(msg[11:19], "Stratux ")
+	
+	// Device long name (16 bytes)
+	copy(msg[19:35], "Go-Stratux      ")
+	
+	// Capabilities
+	msg[35] = 0x01  // MSL altitude capability
+	
+	// CPU temp (fake)
+	msg[36] = 0x00
+	msg[37] = 0xC8
+	
+	// Number of towers
+	msg[38] = 0x00
 	
 	return prepareMessage(msg)
 }
@@ -175,11 +222,8 @@ func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte 
 		}
 	}
 	
-	// Emergency/priority code (byte 28, last byte before CRC)
-	// This byte was missing in the original implementation!
-	// 0 = No emergency
-	// Note: In the original, msg was 28 bytes long but the spec requires 28 bytes PLUS this emergency byte
-	// However, checking the C code more carefully...
+	// Emergency/priority code
+	msg[27] = 0
 	
 	return prepareMessage(msg)
 }
@@ -198,13 +242,13 @@ func MakeOwnshipGeoAltitude(altitude int) []byte {
 	msg[3] = 0x00
 	
 	// Vertical figure of merit (0x7FFF = not available)
-	msg[4] = 0x7F
+	msg[4] = 0x0A
 	
 	return prepareMessage(msg)
 }
 
 // MakeTrafficReport creates a traffic report message (28 bytes)
-func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed int) []byte {
+func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed int, callsign string) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgTrafficReport
 	
@@ -261,7 +305,7 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 	msg[15] = byte((speedEncoded & 0x0F) << 4)
 	
 	// Vertical velocity (12-bit, 64 fpm)
-	msg[15] |= 0x08
+	msg[15] |= 0x00
 	msg[16] = 0x00
 	
 	// Track/heading (8-bit)
@@ -272,9 +316,14 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 	msg[18] = 1
 	
 	// Callsign (8 bytes, space-padded)
-	for i := 19; i < 27; i++ {
-		msg[i] = ' '
+	cs := callsign
+	if len(cs) > 8 {
+		cs = cs[:8]
 	}
+	for len(cs) < 8 {
+		cs += " "
+	}
+	copy(msg[19:27], cs)
 	
 	// Emergency status
 	msg[27] = 0

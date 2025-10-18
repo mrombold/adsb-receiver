@@ -3,6 +3,8 @@ package gdl90
 import (
 	"log"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 	
 	"adsb-receiver/pkg/traffic"
@@ -19,8 +21,9 @@ type Server struct {
 
 // NewServer creates a new GDL90 server
 func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, port string) *Server {
-	// Hardcoded target: iPad at 192.168.10.50:4000
-	targetAddr, _ := net.ResolveUDPAddr("udp4", "192.168.10.50:4000")
+	// Target iPad/EFB at 192.168.10.50:4000
+	// Change this to match your network or use broadcast
+	targetAddr, _ := net.ResolveUDPAddr("udp4", "192.168.10.255:4000")
 	
 	return &Server{
 		trafficMgr:  trafficMgr,
@@ -43,17 +46,22 @@ func (s *Server) Serve() error {
 	}
 	defer conn.Close()
 
-	log.Printf("GDL90 server listening on %s", s.port)
-	log.Printf("Sending to iPad at %s", s.targetAddr.String())
-	log.Println("Sending: Heartbeats (1Hz) + Ownship Position (5Hz)")
+	// Big write buffer for bursts
+	conn.SetWriteBuffer(1024 * 1024)
 
-	// Heartbeat ticker - 1 Hz
+	log.Printf("GDL90 server listening on %s", s.port)
+	log.Printf("Sending to %s", s.targetAddr.String())
+	log.Println("Sending: Heartbeats + Ownship + Traffic at 1 Hz")
+
+	// All tickers at 1 Hz - this is the key!
 	heartbeatTicker := time.NewTicker(1 * time.Second)
 	defer heartbeatTicker.Stop()
 
-	// Position ticker - 5 Hz (every 200ms)
-	positionTicker := time.NewTicker(200 * time.Millisecond)
-	defer positionTicker.Stop()
+	ownshipTicker := time.NewTicker(1 * time.Second)
+	defer ownshipTicker.Stop()
+
+	trafficTicker := time.NewTicker(1 * time.Second)
+	defer trafficTicker.Stop()
 
 	for {
 		select {
@@ -61,31 +69,86 @@ func (s *Server) Serve() error {
 			// Check if we have GPS
 			hasGPS := s.positionMgr.HasPosition()
 			
-			// Send heartbeats with GPS status
-			heartbeat := MakeHeartbeat(hasGPS, false)
-			stratuxHB := MakeStratuxHeartbeat(hasGPS, false)
+			// Send ALL heartbeat messages together - this is critical!
+			heartbeatBundle := [][]byte{
+				MakeHeartbeat(hasGPS, false),
+				MakeStratuxHeartbeat(hasGPS, false),
+				MakeStratuxStatus(hasGPS, false),
+			}
 			
-			conn.WriteToUDP(heartbeat, s.targetAddr)
-			conn.WriteToUDP(stratuxHB, s.targetAddr)
+			for _, msg := range heartbeatBundle {
+				if _, err := conn.WriteToUDP(msg, s.targetAddr); err != nil {
+					log.Printf("Error sending heartbeat: %v", err)
+				}
+			}
 			
-			log.Printf("✓ Sent heartbeats (GPS: %v)", hasGPS)
+			log.Printf("✓ Sent heartbeat bundle (GPS: %v)", hasGPS)
 
-		case <-positionTicker.C:
+		case <-ownshipTicker.C:
 			// Send ownship position if available
 			if pos, ok := s.positionMgr.GetPosition(); ok {
+				// Convert meters to feet
 				altFeet := int(pos.Altitude * 3.28084)
 				
-				ownship := MakeOwnshipReport(
-					pos.Lat, pos.Lon, altFeet, 
-					int(pos.Track), int(pos.Speed),
-				)
-				geo := MakeOwnshipGeoAltitude(altFeet)
+				// Send both ownship messages
+				ownshipMsgs := [][]byte{
+					MakeOwnshipReport(
+						pos.Lat, 
+						pos.Lon, 
+						altFeet, 
+						int(pos.Track), 
+						int(pos.Speed),
+					),
+					MakeOwnshipGeoAltitude(altFeet),
+				}
 				
-				conn.WriteToUDP(ownship, s.targetAddr)
-				conn.WriteToUDP(geo, s.targetAddr)
+				for _, msg := range ownshipMsgs {
+					if _, err := conn.WriteToUDP(msg, s.targetAddr); err != nil {
+						log.Printf("Error sending ownship: %v", err)
+					}
+				}
+				
+				log.Printf("✓ Sent ownship: %.4f,%.4f @ %dft, %d°, %dkts",
+					pos.Lat, pos.Lon, altFeet, int(pos.Track), int(pos.Speed))
+			}
+
+		case <-trafficTicker.C:
+			// Send traffic reports at 1 Hz per target
+			aircraft := s.trafficMgr.GetAircraft()
+			
+			if len(aircraft) > 0 {
+				for _, ac := range aircraft {
+					// Skip aircraft without position
+					if ac.Lat == 0 && ac.Lon == 0 {
+						continue
+					}
+					
+					// Parse ICAO from hex string
+					icao := parseICAO(ac.ICAO)
+					
+					trafficMsg := MakeTrafficReport(
+						icao,
+						ac.Lat,
+						ac.Lon,
+						ac.Altitude,
+						ac.Track,
+						ac.Speed,
+						ac.Callsign,
+					)
+					
+					if _, err := conn.WriteToUDP(trafficMsg, s.targetAddr); err != nil {
+						log.Printf("Error sending traffic: %v", err)
+					}
+				}
+				
+				log.Printf("✓ Sent %d traffic reports", len(aircraft))
 			}
 		}
 	}
+}
 
-	return nil
+// parseICAO converts hex ICAO string to uint32
+func parseICAO(icaoHex string) uint32 {
+	icao, _ := strconv.ParseUint(strings.TrimSpace(icaoHex), 16, 32)
+	return uint32(icao)
 }

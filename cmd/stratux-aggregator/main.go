@@ -5,34 +5,40 @@ import (
 	"time"
 	
 	"adsb-receiver/pkg/adsb1090"
+	"adsb-receiver/pkg/gdl90"
+	"adsb-receiver/pkg/gps"
+	"adsb-receiver/pkg/position"
 	"adsb-receiver/pkg/traffic"
 )
 
 func main() {
 	log.Println("Starting ADS-B Receiver Aggregator")
+	log.Println("===================================")
 	
-	// Create traffic manager
+	// Create state managers
 	trafficMgr := traffic.NewManager()
-	go trafficMgr.Run()
+	positionMgr := position.NewManager()
 	
-	// Create dump1090 client
+	// Start manager goroutines
+	go trafficMgr.Run()
+	go positionMgr.Run()
+	
+	// Create clients
 	adsb1090Client := adsb1090.NewClient("localhost:30003")
+	gpsClient := gps.NewClient("localhost:2947")
 	
 	// Start reading from dump1090
 	go adsb1090Client.Read(trafficMgr.Updates())
 	
-	// Status ticker
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	// Start reading from gpsd
+	go gpsClient.Read(positionMgr.Updates())
 	
-	for range ticker.C {
-		count := trafficMgr.Count()
-		aircraft := trafficMgr.GetAircraft()
-		
-		log.Printf("Tracking %d aircraft", count)
-		for _, ac := range aircraft {
-			log.Printf("  %s: %s at %d ft, %.4f,%.4f", 
-				ac.ICAO, ac.Callsign, ac.Altitude, ac.Lat, ac.Lon)
-		}
-	}
+	// Give services time to connect
+	time.Sleep(2 * time.Second)
+	
+	// Create and start GDL90 server
+	gdl90Server := gdl90.NewServer(trafficMgr, positionMgr, ":4000")
+	
+	log.Println("GDL90 server starting...")
+	log.Fatal(gdl90Server.Serve())
 }
