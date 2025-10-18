@@ -51,16 +51,16 @@ func (s *Server) Serve() error {
 
 	log.Printf("GDL90 server listening on %s", s.port)
 	log.Printf("Sending to %s", s.targetAddr.String())
-	log.Println("Sending: Heartbeats + Ownship + Traffic at 1 Hz")
+	//log.Println("Sending: Heartbeats + Ownship + Traffic at 1 Hz")
 
 	// All tickers at 1 Hz - this is the key!
 	heartbeatTicker := time.NewTicker(1 * time.Second)
 	defer heartbeatTicker.Stop()
 
-	ownshipTicker := time.NewTicker(1 * time.Second)
+	ownshipTicker := time.NewTicker(200 * time.Millisecond)
 	defer ownshipTicker.Stop()
 
-	trafficTicker := time.NewTicker(1 * time.Second)
+	trafficTicker := time.NewTicker(500 * time.Millisecond)
 	defer trafficTicker.Stop()
 
 	for {
@@ -82,14 +82,14 @@ func (s *Server) Serve() error {
 				}
 			}
 			
-			log.Printf("✓ Sent heartbeat bundle (GPS: %v)", hasGPS)
+			//log.Printf("✓ Sent heartbeat bundle (GPS: %v)", hasGPS)
 
 		case <-ownshipTicker.C:
 			// Send ownship position if available
 			if pos, ok := s.positionMgr.GetPosition(); ok {
 				// DEBUG: Log raw position data
-				log.Printf("RAW Position from manager: Lat=%.8f, Lon=%.8f, Alt=%.2fm, Track=%.1f°, Speed=%.1fkts",
-					pos.Lat, pos.Lon, pos.Altitude, pos.Track, pos.Speed)
+				//log.Printf("RAW Position from manager: Lat=%.8f, Lon=%.8f, Alt=%.2fm, Track=%.1f°, Speed=%.1fkts",
+				//	pos.Lat, pos.Lon, pos.Altitude, pos.Track, pos.Speed)
 				
 				// Convert meters to feet
 				altFeet := int(pos.Altitude * 3.28084)
@@ -112,8 +112,8 @@ func (s *Server) Serve() error {
 					}
 				}
 				
-				log.Printf("✓ Sent ownship: %.4f,%.4f @ %dft, %d°, %dkts",
-					pos.Lat, pos.Lon, altFeet, int(pos.Track), int(pos.Speed))
+				//log.Printf("✓ Sent ownship: %.4f,%.4f @ %dft, %d°, %dkts",
+				//	pos.Lat, pos.Lon, altFeet, int(pos.Track), int(pos.Speed))
 			} else {
 				log.Printf("✗ No valid position available")
 			}
@@ -147,7 +147,7 @@ func (s *Server) Serve() error {
 					}
 				}
 				
-				log.Printf("✓ Sent %d traffic reports", len(aircraft))
+				//log.Printf("✓ Sent %d traffic reports", len(aircraft))
 			}
 		}
 	}

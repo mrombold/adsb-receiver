@@ -34,28 +34,31 @@ func (m *Manager) Run() {
 			m.mu.Lock()
 			ac := m.aircraft[update.ICAO]
 			if ac == nil {
-				ac = &adsb1090.Aircraft{ICAO: update.ICAO}
-				m.aircraft[update.ICAO] = ac
+				// New aircraft - copy the update
+				newAc := update
+				m.aircraft[update.ICAO] = &newAc
+			} else {
+				// Merge fields from update into existing aircraft
+				// Only update fields that are marked as valid
+				if update.HasCallsign {
+					ac.Callsign = update.Callsign
+				}
+				if update.HasAltitude {
+					ac.Altitude = update.Altitude
+				}
+				if update.HasPosition {
+					ac.Lat = update.Lat
+					ac.Lon = update.Lon
+				}
+				if update.HasSpeed {
+					ac.Speed = update.Speed
+				}
+				if update.HasTrack {
+					ac.Track = update.Track
+				}
+				// Always update timestamp
+				ac.Timestamp = update.Timestamp
 			}
-			
-			// Update fields (only if not empty)
-			if update.Callsign != "" {
-				ac.Callsign = update.Callsign
-			}
-			if update.Altitude != 0 {
-				ac.Altitude = update.Altitude
-			}
-			if update.Lat != 0 && update.Lon != 0 {
-				ac.Lat = update.Lat
-				ac.Lon = update.Lon
-			}
-			if update.Speed != 0 {
-				ac.Speed = update.Speed
-			}
-			if update.Track != 0 {
-				ac.Track = update.Track
-			}
-			ac.Timestamp = update.Timestamp
 			m.mu.Unlock()
 			
 		case <-ticker.C:
