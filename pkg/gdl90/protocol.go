@@ -44,7 +44,8 @@ func computeCRC(msg []byte) uint16 {
 // encodeLatLon encodes latitude or longitude as 24-bit two's complement
 // Per GDL90 spec: resolution = 180.0 / 2^23
 func encodeLatLon(coord float64) [3]byte {
-	val := int32(coord * 8388608.0 / 180.0)
+	// Scale factor: 2^23 / 180 = 46603.377778
+	val := int32(coord * 46603.377778)
 	
 	return [3]byte{
 		byte((val >> 16) & 0xFF),
@@ -53,33 +54,37 @@ func encodeLatLon(coord float64) [3]byte {
 	}
 }
 
-// MakeHeartbeat creates a standard GDL90 heartbeat message (7 bytes + ID = 8 bytes before CRC)
+// MakeHeartbeat creates a standard GDL90 heartbeat message (7 bytes total)
 func MakeHeartbeat(hasGPS, hasAHRS bool) []byte {
-	msg := make([]byte, 7)
-	msg[0] = MsgHeartbeat
-	
-	// Status Byte 1
-	if hasGPS {
-		msg[1] |= 0x80  // GPS position valid
-	}
-	msg[1] |= 0x01  // UAT Initialized
-	
-	// Status Byte 2
-	if hasAHRS {
-		msg[2] |= 0x01  // AHRS valid
-	}
-	msg[2] |= 0x01  // UTC OK
-	
-	// Timestamp (seconds since midnight UTC)
-	now := time.Now().UTC()
-	secondsSinceMidnight := uint32(now.Hour()*3600 + now.Minute()*60 + now.Second())
-	msg[3] = byte((secondsSinceMidnight >> 16) & 0xFF)
-	binary.LittleEndian.PutUint16(msg[4:6], uint16(secondsSinceMidnight&0xFFFF))
-	
-	// Message counts
-	msg[6] = 0
-	
-	return prepareMessage(msg)
+    msg := make([]byte, 7)
+    msg[0] = MsgHeartbeat
+    
+    // Status Byte 1 (byte 1)
+    if hasGPS {
+        msg[1] |= 0x80  // Bit 7: GPS position valid
+    }
+    msg[1] |= 0x01      // Bit 0: UAT Initialized
+    
+    // Status Byte 2 (byte 2)
+    msg[2] |= 0x01      // Bit 0: UTC OK
+    
+    // Timestamp (seconds since midnight UTC)
+    now := time.Now().UTC()
+    secondsSinceMidnight := uint32(now.Hour()*3600 + now.Minute()*60 + now.Second())
+    
+    // Bit 16 of timestamp goes into bit 7 of Status Byte 2
+    if secondsSinceMidnight & 0x10000 != 0 {
+        msg[2] |= 0x80
+    }
+    
+    // Bits 15-0 of timestamp go into bytes 3-4 (little-endian)
+    binary.LittleEndian.PutUint16(msg[3:5], uint16(secondsSinceMidnight&0xFFFF))
+    
+    // Message counts (bytes 5-6)
+    msg[5] = 0
+    msg[6] = 0
+    
+    return prepareMessage(msg)
 }
 
 // MakeStratuxHeartbeat creates a Stratux identification heartbeat
@@ -93,142 +98,131 @@ func MakeStratuxHeartbeat(hasGPS, hasAHRS bool) []byte {
 		msg[1] |= 0x01
 	}
 	
-	msg[1] |= (1 << 2)  // Bit 2 set
+	msg[1] |= (1 << 2)  // Bit 2 set  (protocol version)
 	
 	return prepareMessage(msg)
 }
 
 // MakeStratuxStatus creates the extended Stratux status message
 func MakeStratuxStatus(hasGPS, hasAHRS bool) []byte {
-	msg := make([]byte, 40)
+	msg := make([]byte, 29)
 	msg[0] = 'S'
 	msg[1] = 'X'
 	msg[2] = 1  // Message version
 	msg[3] = 1  // Version code
 	
 	// Version string
-	copy(msg[4:8], []byte{1, 6, 0, 0})
+	copy(msg[4:8], []byte{9, 9, 9, 9})
 	
 	// Hardware revision
-	msg[8] = 0
+	msg[8] = 0xFF
+	msg[9] = 0xFF
+	msg[10] = 0xFF
+	msg[11] = 0xFF
 	
 	// Status flags
-	if hasGPS {
-		msg[9] |= 0x02
-	}
 	if hasAHRS {
-		msg[9] |= 0x01
+		msg[12] |= 0x01
+		msg[13] |= (1 << 2)
 	}
-	
-	// Device short name (8 bytes)
-	copy(msg[11:19], "Stratux ")
-	
-	// Device long name (16 bytes)
-	copy(msg[19:35], "Go-Stratux      ")
-	
-	// Capabilities
-	msg[35] = 0x01  // MSL altitude capability
-	
-	// CPU temp (fake)
-	msg[36] = 0x00
-	msg[37] = 0xC8
-	
-	// Number of towers
-	msg[38] = 0x00
-	
+
+	if hasGPS {
+		msg[13] |= (1<<7)
+	}
+
+	// not sure what byte 14 does
+	// byte 15 is num radios and imu hardware
+
+	// byte 16 is number of satellites locked
+	msg[16] = byte(5)
+
+	// byte 17 is number of satellites tracked
+	msg[17] = byte(5)
+
+	// byte 18,19 is number of uat traffic targets
+
+	// byte 20,21 is number of 1090es traffic targets
+
+	// byte 22,23 is number of uat messages per minute
+
+	// byte 24,25 is number of 1090es messages per minute
+
+	// byte 26,27 is cpu temperature uint16
+
+	// byte 28 is number of ADS-B towers seen
+
+	// remainder of bytes are list of ADS-B towers lat/lon as 24 bit encoded values (exceeds initial buffer but that's ok for some reason)
+
 	return prepareMessage(msg)
 }
 
+
+
 // MakeOwnshipReport creates an ownship position report (28 bytes)
+// lat, lon in degrees, altitude in ft (pressure alt), track in degrees from GPS, speed in knots from GPS
 func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgOwnshipReport
 	
-	// Status byte (bit 0 = GPS valid)
-	msg[1] = 0x01
+	// Status byte
+	msg[1] = 0x00 // No alert, ADS-B with ICAO address
 	
-	// Address type / participant address (bytes 2-5)
-	// For ownship, these are typically 0
-	msg[2] = 0
-	msg[3] = 0
-	msg[4] = 0
-	msg[5] = 0
+	// Address type (0 = ADS-B with ICAO address)
+	msg[1] |= 0x00
 	
-	// Latitude (24-bit two's complement, bytes 6-8)
+	// ICAO address (3 bytes) - N8200X = 0xAB3349, N6296E = 0xA83ADB
+	msg[2] = 0xAB
+	msg[3] = 0x33
+	msg[4] = 0x49
+	
+	// Latitude (3 bytes, signed)
 	latBytes := encodeLatLon(lat)
-	msg[6] = latBytes[0]
-	msg[7] = latBytes[1]
-	msg[8] = latBytes[2]
+	copy(msg[5:8], latBytes[:])
 	
-	// Longitude (24-bit two's complement, bytes 9-11)
+	// Longitude (3 bytes, signed)
 	lonBytes := encodeLatLon(lon)
-	msg[9] = lonBytes[0]
-	msg[10] = lonBytes[1]
-	msg[11] = lonBytes[2]
+	copy(msg[8:11], lonBytes[:])
 	
-	// Altitude (12-bit): ((altitude_feet + 1000) / 25)
-	var altEncoded int16
-	if altitude < -1000 || altitude > 101350 {
-		altEncoded = 0xFFF  // Invalid
-	} else {
-		altEncoded = int16((altitude + 1000) / 25)
-		if altEncoded < 0 {
-			altEncoded = 0
-		}
-		if altEncoded > 0xFFE {
-			altEncoded = 0xFFE
-		}
-	}
+	// PRESSURE Altitude (12 bits) - encoded as (alt + 1000) / 25  
+	altEncoded := uint16((altitude + 1000) / 25)
+	msg[11] = byte((altEncoded >> 4) & 0xFF)
+	msg[12] = byte((altEncoded & 0x0F) << 4)
 	
-	// Altitude is 12 bits spanning bytes 12-13
-	msg[12] = byte(altEncoded >> 4)
-	msg[13] = byte((altEncoded & 0x0F) << 4)
+	// Type of data in "tt" field, updated or extrap, and ground/airborne
+	msg[12] |= 0x09 // 0b1001 = airborne, "tt"=true track angle
 	
-	// Misc byte (bits 0-3 of byte 13): TT field
-	// 01 = True Track Angle
-	msg[13] |= 0x09
+	// NIC
+	msg[13] = 0x88 // NIC=8, NACp=8 <0.1nm, <0.05nm
 	
-	// NIC (Navigation Integrity Category) - 4 bits
-	// NACp (Navigation Accuracy Category - Position) - 4 bits
-	msg[14] = 0xA8
-	
-	// Horizontal velocity (12-bit, knots)
+	// Horizontal velocity (12 bits unsigned) - speed in knots
 	speedEncoded := uint16(speed)
-	if speedEncoded > 0xFFE {
-		speedEncoded = 0xFFE
-	}
-	msg[15] = byte(speedEncoded >> 4)
-	msg[16] = byte((speedEncoded & 0x0F) << 4)
+	msg[14] = byte((speedEncoded >> 4) & 0xFF)
+	msg[15] = byte((speedEncoded & 0x0F) << 4)
 	
-	// Vertical velocity (12-bit, 64 fpm resolution)
-	// Setting to 0 (no vertical velocity)
-	msg[16] |= 0x00
-	msg[17] = 0x00
+	// Vertical velocity (12 bits signed) - 0 fpm for level flight
+	// 0x800 for no vertical rate info available
+	msg[15] |= 0x08
+	msg[16] = 0x00
 	
-	// Track/Heading (8-bit, 360/256 degrees resolution)
-	trackEncoded := uint8(float64(track%360) * 256.0 / 360.0)
-	msg[18] = trackEncoded
+	// Track (8 bits) - track/1.40625   (track / (360/256))
+	trackEncoded := uint8(float64(track) / 1.40625)
+	msg[17] = trackEncoded
 	
-	// Emitter category (1 = light aircraft)
-	msg[19] = 1
+	// Emitter category (8 = light aircraft)
+	msg[18] = 0x01
 	
-	// Call sign (8 bytes, ASCII, space-padded)
-	callsign := "OWNSHIP "
-	for i := 0; i < 8; i++ {
-		if i < len(callsign) {
-			msg[20+i] = callsign[i]
-		} else {
-			msg[20+i] = ' '
-		}
-	}
+	// Call sign (8 bytes) - "N12345  "
+	copy(msg[19:27], "N8200X  ")
 	
 	// Emergency/priority code
-	msg[27] = 0
+	msg[27] = 0x00
 	
 	return prepareMessage(msg)
 }
 
-// MakeOwnshipGeoAltitude creates ownship geometric altitude message
+
+
+// MakeOwnshipGeoAltitude creates ownship geometric altitude message (eight above WGS-84 ellipsoid)
 func MakeOwnshipGeoAltitude(altitude int) []byte {
 	msg := make([]byte, 5)
 	msg[0] = MsgOwnshipGeoAltitude
@@ -242,6 +236,7 @@ func MakeOwnshipGeoAltitude(altitude int) []byte {
 	msg[3] = 0x00
 	
 	// Vertical figure of merit (0x7FFF = not available)
+	// 0x0A = 10 meters
 	msg[4] = 0x0A
 	
 	return prepareMessage(msg)
@@ -287,7 +282,7 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 		}
 	}
 	
-	msg[11] = byte(altEncoded >> 4)
+	msg[11] = byte((altEncoded >> 4) & 0xFF)
 	msg[12] = byte((altEncoded & 0x0F) << 4)
 	
 	// Misc byte (TT field)
@@ -304,12 +299,13 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 	msg[14] = byte(speedEncoded >> 4)
 	msg[15] = byte((speedEncoded & 0x0F) << 4)
 	
-	// Vertical velocity (12-bit, 64 fpm)
-	msg[15] |= 0x00
+	// Vertical velocity (12 bits signed) - 0 fpm for level flight
+	// 0x800 for no vertical rate info available
+	msg[15] |= 0x08
 	msg[16] = 0x00
 	
-	// Track/heading (8-bit)
-	trackEncoded := uint8(float64(track%360) * 256.0 / 360.0)
+	// Track (8 bits) - track/1.40625   (track / (360/256))
+	trackEncoded := uint8(float64(track) / 1.40625)
 	msg[17] = trackEncoded
 	
 	// Emitter category

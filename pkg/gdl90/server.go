@@ -87,6 +87,10 @@ func (s *Server) Serve() error {
 		case <-ownshipTicker.C:
 			// Send ownship position if available
 			if pos, ok := s.positionMgr.GetPosition(); ok {
+				// DEBUG: Log raw position data
+				log.Printf("RAW Position from manager: Lat=%.8f, Lon=%.8f, Alt=%.2fm, Track=%.1f°, Speed=%.1fkts",
+					pos.Lat, pos.Lon, pos.Altitude, pos.Track, pos.Speed)
+				
 				// Convert meters to feet
 				altFeet := int(pos.Altitude * 3.28084)
 				
@@ -110,6 +114,8 @@ func (s *Server) Serve() error {
 				
 				log.Printf("✓ Sent ownship: %.4f,%.4f @ %dft, %d°, %dkts",
 					pos.Lat, pos.Lon, altFeet, int(pos.Track), int(pos.Speed))
+			} else {
+				log.Printf("✗ No valid position available")
 			}
 
 		case <-trafficTicker.C:
