@@ -327,6 +327,23 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 	return prepareMessage(msg)
 }
 
+
+// MakeUplinkData wraps a raw UAT uplink frame in GDL90 format
+// This passes through FIS-B weather data as Stratux does
+func MakeUplinkData(uatFrame []byte) []byte {
+	// GDL90 Message ID 0x07: Uplink Data
+	// Format: [0x07][raw UAT frame data]
+	msg := make([]byte, 1+len(uatFrame))
+	msg[0] = 0x07 // Message Type: Uplink Data
+	
+	// Copy raw UAT frame directly
+	copy(msg[1:], uatFrame)
+	
+	return prepareMessage(msg)
+}
+
+
+
 // CRC lookup table (same as C reference)
 var crcTable = [256]uint16{
 	0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,

@@ -9,14 +9,15 @@ import (
 )
 
 type Position struct {
-    Lat       float64
-    Lon       float64
-    Altitude  float64  // meters MSL
-    Track     float64
-    Speed     float64  // knots
-    Climb     float64  // ft/min
-    Mode      int
-    Timestamp time.Time
+    Lat          float64
+    Lon          float64
+    Altitude     float64  // meters MSL
+    AltitudeHAE  float64  // meters above WGS84 Ellipsoid
+    Track        float64
+    Speed        float64  // knots
+    Climb        float64  // ft/min
+    Mode         int
+    Timestamp    time.Time
 }
 
 type TPVMessage struct {
@@ -72,14 +73,15 @@ func (c *Client) Read(updates chan<- Position) error {
                 }
                 
                 pos := Position{
-                    Lat:       msg.Lat,
-                    Lon:       msg.Lon,
-                    Altitude:  altitude,  // meters MSL
-                    Track:     msg.Track,
-                    Speed:     msg.Speed * 1.94384, // m/s to knots
-                    Climb:     msg.Climb * 196.85,  // m/s to ft/min
-                    Mode:      msg.Mode,
-                    Timestamp: time.Now(),
+                    Lat:          msg.Lat,
+                    Lon:          msg.Lon,
+                    Altitude:     altitude,  // meters MSL
+                    AltitudeHAE:  msg.AltHAE,
+                    Track:        msg.Track,
+                    Speed:        msg.Speed * 1.94384, // m/s to knots
+                    Climb:        msg.Climb * 196.85,  // m/s to ft/min
+                    Mode:         msg.Mode,
+                    Timestamp:    time.Now(),
                 }
                                 
                 select {

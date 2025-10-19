@@ -7,27 +7,29 @@ import (
 	"strings"
 	"time"
 	
-	"adsb-receiver/pkg/traffic"
 	"adsb-receiver/pkg/position"
+	"adsb-receiver/pkg/traffic"
+	"adsb-receiver/pkg/weather"
 )
 
 // Server sends GDL90 messages via UDP
 type Server struct {
 	trafficMgr  *traffic.Manager
 	positionMgr *position.Manager
+	weatherMgr  *weather.Manager
 	port        string
 	targetAddr  *net.UDPAddr
 }
 
 // NewServer creates a new GDL90 server
-func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, port string) *Server {
-	// Target iPad/EFB at 192.168.10.50:4000
-	// Change this to match your network or use broadcast
+func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, weatherMgr *weather.Manager, port string) *Server {
+	// Target iPad/EFB at broadcast address
 	targetAddr, _ := net.ResolveUDPAddr("udp4", "192.168.10.255:4000")
-	
+
 	return &Server{
 		trafficMgr:  trafficMgr,
 		positionMgr: positionMgr,
+		weatherMgr:  weatherMgr,
 		port:        port,
 		targetAddr:  targetAddr,
 	}
@@ -63,6 +65,10 @@ func (s *Server) Serve() error {
 	trafficTicker := time.NewTicker(500 * time.Millisecond)
 	defer trafficTicker.Stop()
 
+		// Weather - send immediately when available
+	weatherTicker := time.NewTicker(1 * time.Second)
+	defer weatherTicker.Stop()
+
 	for {
 		select {
 		case <-heartbeatTicker.C:
@@ -82,17 +88,14 @@ func (s *Server) Serve() error {
 				}
 			}
 			
-			//log.Printf("✓ Sent heartbeat bundle (GPS: %v)", hasGPS)
 
 		case <-ownshipTicker.C:
 			// Send ownship position if available
 			if pos, ok := s.positionMgr.GetPosition(); ok {
-				// DEBUG: Log raw position data
-				//log.Printf("RAW Position from manager: Lat=%.8f, Lon=%.8f, Alt=%.2fm, Track=%.1f°, Speed=%.1fkts",
-				//	pos.Lat, pos.Lon, pos.Altitude, pos.Track, pos.Speed)
-				
+
 				// Convert meters to feet
 				altFeet := int(pos.Altitude * 3.28084)
+				altHAEfeet := int(pos.AltitudeHAE * 3.28084)
 				
 				// Send both ownship messages
 				ownshipMsgs := [][]byte{
@@ -103,7 +106,7 @@ func (s *Server) Serve() error {
 						int(pos.Track), 
 						int(pos.Speed),
 					),
-					MakeOwnshipGeoAltitude(altFeet),
+					MakeOwnshipGeoAltitude(altHAEfeet),
 				}
 				
 				for _, msg := range ownshipMsgs {
@@ -147,7 +150,23 @@ func (s *Server) Serve() error {
 					}
 				}
 				
-				//log.Printf("✓ Sent %d traffic reports", len(aircraft))
+			}
+
+		case <-weatherTicker.C:
+			// Send weather frames as they become available
+			frames := s.weatherMgr.GetFrames()
+			
+			if len(frames) > 0 {
+				for _, frame := range frames {
+					// Wrap raw UAT frame in GDL90 uplink message
+					weatherMsg := MakeUplinkData(frame)
+					
+					if _, err := conn.WriteToUDP(weatherMsg, s.targetAddr); err != nil {
+						log.Printf("Error sending weather: %v", err)
+					}
+				}
+				
+				log.Printf("✓ Sent %d weather frames", len(frames))
 			}
 		}
 	}
