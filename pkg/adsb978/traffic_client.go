@@ -75,64 +75,59 @@ func (c *TrafficClient) Read() error {
 
 // parseTraffic converts dump978 JSON to Aircraft format
 func (c *TrafficClient) parseTraffic(msg map[string]interface{}) (adsb1090.Aircraft, bool) {
-	ac := adsb1090.Aircraft{
-		Timestamp: time.Now(),
-	}
+    ac := adsb1090.Aircraft{
+        Timestamp: time.Now(),
+    }
 
-	// Get ICAO address
-	if addr, ok := msg["address"].(string); ok {
-		ac.ICAO = strings.ToUpper(addr)
-	} else if icao, ok := msg["icao"].(string); ok {
-		ac.ICAO = strings.ToUpper(icao)
-	} else {
-		return ac, false
-	}
+    // Get ICAO address
+    if addr, ok := msg["hex"].(string); ok {
+        ac.ICAO = strings.ToUpper(addr)
+    } else {
+        return ac, false
+    }
 
-	// Get position
-	lat, hasLat := msg["lat"].(float64)
-	lon, hasLon := msg["lon"].(float64)
-	if hasLat && hasLon && lat != 0 && lon != 0 {
-		ac.Lat = lat
-		ac.Lon = lon
-		ac.HasPosition = true
-	} else {
-		return ac, false // Must have position for traffic
-	}
+    // Get position
+    lat, hasLat := msg["lat"].(float64)
+    lon, hasLon := msg["lon"].(float64)
+    if hasLat && hasLon && lat != 0 && lon != 0 {
+        ac.Lat = lat
+        ac.Lon = lon
+        ac.HasPosition = true
+    } else {
+        return ac, false // Must have position for traffic
+    }
 
-	// Get altitude
-	if alt, ok := msg["alt_baro"].(float64); ok {
-		ac.Altitude = int(alt)
-		ac.HasAltitude = true
-	} else if alt, ok := msg["altitude"].(float64); ok {
-		ac.Altitude = int(alt)
-		ac.HasAltitude = true
-	} else if alt, ok := msg["alt_geom"].(float64); ok {
-		ac.Altitude = int(alt)
-		ac.HasAltitude = true
-	}
+	if call, ok := msg["flight"].(string); ok {
+        ac.Callsign = strings.ToUpper(strings.TrimSpace(call))
+		ac.HasCallsign = true
+    } 
 
-	// Get velocity
-	if track, ok := msg["track"].(float64); ok {
-		ac.Track = int(track)
-		ac.HasTrack = true
-	} else if track, ok := msg["heading"].(float64); ok {
-		ac.Track = int(track)
-		ac.HasTrack = true
-	}
+    // Get altitude (barometric only - required for GDL90)
+    if alt, ok := msg["alt_baro"].(float64); ok {
+        ac.Altitude = int(alt)
+        ac.HasAltitude = true
+    }
 
-	if speed, ok := msg["gs"].(float64); ok {
-		ac.Speed = int(speed)
-		ac.HasSpeed = true
-	} else if speed, ok := msg["speed"].(float64); ok {
-		ac.Speed = int(speed)
-		ac.HasSpeed = true
-	}
+    // Get velocity (ground track only - not heading)
+    if track, ok := msg["track"].(float64); ok {
+        ac.Track = int(track)
+        ac.HasTrack = true
+    }
 
-	// Get callsign
-	if cs, ok := msg["flight"].(string); ok {
-		ac.Callsign = strings.TrimSpace(cs)
-		ac.HasCallsign = ac.Callsign != ""
-	}
+    if speed, ok := msg["gs"].(float64); ok {
+        ac.Speed = int(speed)
+        ac.HasSpeed = true
+    } else if speed, ok := msg["speed"].(float64); ok {
+        ac.Speed = int(speed)
+        ac.HasSpeed = true
+    }
 
-	return ac, true
+    // Get vertical velocity (NEW)
+    if vv, ok := msg["vert_rate"].(float64); ok {
+        ac.VertVel = int(vv)
+        ac.HasVertVel = true
+    }
+
+
+    return ac, true
 }

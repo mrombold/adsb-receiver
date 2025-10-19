@@ -80,7 +80,8 @@ func (c *Client) parseBaseStation(line string) (Aircraft, bool) {
 	}
 	
 	msgType := fields[1]
-	icao := strings.TrimSpace(fields[4])
+	icao := strings.ToUpper(strings.TrimSpace(fields[4]))
+
 	
 	if icao == "" {
 		return Aircraft{}, false
@@ -95,7 +96,7 @@ func (c *Client) parseBaseStation(line string) (Aircraft, bool) {
 	// Field 10 has callsign
 	if msgType == "1" && len(fields) >= 11 {
 		if fields[10] != "" {
-			ac.Callsign = strings.TrimSpace(fields[10])
+			ac.Callsign = strings.ToUpper(strings.TrimSpace(fields[10]))
 			ac.HasCallsign = true
 		}
 		return ac, true
