@@ -56,17 +56,21 @@ func (m *Manager) Run() {
 				if update.HasTrack {
 					ac.Track = update.Track
 				}
+				if update.HasVertVel {
+					ac.VertVel = update.VertVel
+				}
+
 				// Always update timestamp
 				ac.Timestamp = update.Timestamp
 			}
 			m.mu.Unlock()
 			
 		case <-ticker.C:
-			// Cleanup stale aircraft (not seen in 60 seconds)
+			// Cleanup stale aircraft (not seen in 15 seconds)
 			m.mu.Lock()
 			now := time.Now()
 			for icao, ac := range m.aircraft {
-				if now.Sub(ac.Timestamp) > 60*time.Second {
+				if now.Sub(ac.Timestamp) > 15*time.Second {
 					delete(m.aircraft, icao)
 				}
 			}

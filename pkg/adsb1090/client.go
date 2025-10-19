@@ -18,6 +18,7 @@ type Aircraft struct {
 	Lon       float64
 	Track     int
 	Speed     int
+	VertVel   int
 	Timestamp time.Time
 	
 	// Track which fields are valid in this update
@@ -26,6 +27,7 @@ type Aircraft struct {
 	HasAltitude bool
 	HasSpeed    bool
 	HasTrack    bool
+	HasVertVel  bool
 }
 
 // Client connects to dump1090 and reads BaseStation messages
@@ -177,6 +179,15 @@ func (c *Client) parseBaseStation(line string) (Aircraft, bool) {
 			if trk, err := strconv.Atoi(fields[13]); err == nil {
 				ac.Track = trk
 				ac.HasTrack = true
+				hasData = true
+			}
+		}
+
+		// Vertical Velocity
+		if fields[16] != "" {
+			if vv, err := strconv.Atoi(fields[16]); err == nil {
+				ac.VertVel = vv
+				ac.HasVertVel = true
 				hasData = true
 			}
 		}

@@ -105,6 +105,7 @@ func (s *Server) Serve() error {
 						altFeet, 
 						int(pos.Track), 
 						int(pos.Speed),
+						int(pos.Climb),
 					),
 					MakeOwnshipGeoAltitude(altHAEfeet),
 				}
@@ -142,6 +143,7 @@ func (s *Server) Serve() error {
 						ac.Altitude,
 						ac.Track,
 						ac.Speed,
+						ac.VertVel,
 						ac.Callsign,
 					)
 					

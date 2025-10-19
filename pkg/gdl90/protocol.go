@@ -160,7 +160,7 @@ func MakeStratuxStatus(hasGPS, hasAHRS bool) []byte {
 
 // MakeOwnshipReport creates an ownship position report (28 bytes)
 // lat, lon in degrees, altitude in ft (pressure alt), track in degrees from GPS, speed in knots from GPS
-func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte {
+func MakeOwnshipReport(lat, lon float64, altitude, track, speed, vertvel int) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgOwnshipReport
 	
@@ -199,11 +199,28 @@ func MakeOwnshipReport(lat, lon float64, altitude int, track, speed int) []byte 
 	msg[14] = byte((speedEncoded >> 4) & 0xFF)
 	msg[15] = byte((speedEncoded & 0x0F) << 4)
 	
-	// Vertical velocity (12 bits signed) - 0 fpm for level flight
+
+	// Vertical velocity (12 bits signed) - in units of 64 fpm
 	// 0x800 for no vertical rate info available
-	msg[15] |= 0x08
-	msg[16] = 0x00
+	// Field spans: upper 4 bits of msg[15] and all 8 bits of msg[16]
+
+	// Encode as signed 12-bit value in units of 64 fpm
+	vvEncoded := int16(vertvel / 64)
 	
+	// Clamp to valid range: -510 to +509 (0xE02 to 0x1FD in the spec)
+	if vvEncoded > 509 {
+		vvEncoded = 509  // 0x1FD
+	} else if vvEncoded < -510 {
+		vvEncoded = -510 // 0xE02
+	}
+			
+	// Upper 4 bits go into lower nibble of msg[15]
+	msg[15] |= byte((vvEncoded >> 8) & 0x0F)
+	
+	// Lower 8 bits go into msg[16]
+	msg[16] = byte(vvEncoded & 0xFF)
+
+
 	// Track (8 bits) - track/1.40625   (track / (360/256))
 	trackEncoded := uint8(float64(track) / 1.40625)
 	msg[17] = trackEncoded
@@ -243,7 +260,7 @@ func MakeOwnshipGeoAltitude(altitude int) []byte {
 }
 
 // MakeTrafficReport creates a traffic report message (28 bytes)
-func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed int, callsign string) []byte {
+func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, vertvel int, callsign string) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgTrafficReport
 	
@@ -299,10 +316,31 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude int, track, speed
 	msg[14] = byte(speedEncoded >> 4)
 	msg[15] = byte((speedEncoded & 0x0F) << 4)
 	
-	// Vertical velocity (12 bits signed) - 0 fpm for level flight
+	// Vertical velocity (12 bits signed) - in units of 64 fpm
 	// 0x800 for no vertical rate info available
-	msg[15] |= 0x08
-	msg[16] = 0x00
+	// Field spans: upper 4 bits of msg[15] and all 8 bits of msg[16]
+
+	if vertvel == 0 { // or however you detect "no data available"
+		// No vertical rate available
+		msg[15] |= 0x08
+		msg[16] = 0x00
+	} else {
+		// Encode as signed 12-bit value in units of 64 fpm
+		vvEncoded := int16(vertvel / 64)
+		
+		// Clamp to valid range: -510 to +509 (0xE02 to 0x1FD in the spec)
+		if vvEncoded > 509 {
+			vvEncoded = 509  // 0x1FD
+		} else if vvEncoded < -510 {
+			vvEncoded = -510 // 0xE02
+		}
+				
+		// Upper 4 bits go into lower nibble of msg[15]
+		msg[15] |= byte((vvEncoded >> 8) & 0x0F)
+		
+		// Lower 8 bits go into msg[16]
+		msg[16] = byte(vvEncoded & 0xFF)
+	}
 	
 	// Track (8 bits) - track/1.40625   (track / (360/256))
 	trackEncoded := uint8(float64(track) / 1.40625)
