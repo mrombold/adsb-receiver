@@ -9,3 +9,26 @@ adsb1090 basestation data format:
 
 http://woodair.net/sbs/article/barebones42_socket_data.htm
 
+
+
+Spy on dump978 output:
+
+sudo netcat localhost 30978 | hexdump -C | head
+
+
+nc localhost 30979 | head
+
+nc localhost 30979 | jq .
+
+
+
+
+dump978 record:
+(dump978 localhost is over TCP, not UDP)
+Couldn't get 30979 to work for more than a minute at first.
+
+creates raw output:
+nc localhost -u 30978 > dump978.raw
+
+tcpdump for playback later:
+sudo tcpdump -i lo -w dump978.pcap port 30978
