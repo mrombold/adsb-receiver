@@ -31,7 +31,7 @@ func main() {
 	adsb1090Client := adsb1090.NewClient("localhost:30003")
 
 	// For traffic (JSON)
-	adsb978TrafficClient := adsb978.NewTrafficClient("localhost:30979", trafficMgr.Updates())
+	//adsb978TrafficClient := adsb978.NewTrafficClient("localhost:30979", trafficMgr.Updates())
 
 	// For weather (raw frames)
 	adsb978WeatherClient := adsb978.NewWeatherClient("localhost:30978", weatherMgr.Updates())
@@ -42,7 +42,7 @@ func main() {
 	go adsb1090Client.Read(trafficMgr.Updates())
 
 	// Start reading from dump978 (sends to both traffic and weather managers)
-	go adsb978TrafficClient.Read()  // Traffic
+	//go adsb978TrafficClient.Read()  // Traffic
 	go adsb978WeatherClient.Read()  // Weather
 	
 	// Start reading from gpsd

@@ -371,11 +371,13 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, ve
 func MakeUplinkData(uatFrame []byte) []byte {
 	// GDL90 Message ID 0x07: Uplink Data
 	// Format: [0x07][raw UAT frame data]
-	msg := make([]byte, 1+len(uatFrame))
+	msg := make([]byte, 1+3+len(uatFrame))
 	msg[0] = 0x07 // Message Type: Uplink Data
-	
+	msg[1] = 0xFF // Time of reception, 0xFFFFFF if invalid/not available
+	msg[2] = 0xFF //
+	msg[3] = 0xFF //
 	// Copy raw UAT frame directly
-	copy(msg[1:], uatFrame)
+	copy(msg[4:], uatFrame)
 	
 	return prepareMessage(msg)
 }

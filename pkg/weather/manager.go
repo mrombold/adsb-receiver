@@ -1,93 +1,174 @@
 package weather
 
 import (
-	"log"
-	"sync"
-	"time"
+    //"bytes"
+    "log"
+    "sync"
+    "time"
 )
+
+// Frame represents a UAT uplink frame with metadata
+type Frame struct {
+    Data      []byte
+    Timestamp time.Time
+}
 
 // Manager manages raw FIS-B weather frames
 type Manager struct {
-	frames  [][]byte // Raw UAT uplink frames
-	mu      sync.RWMutex
-	updates chan []byte
+    frames  map[string]*Frame  // Key: frame signature (first 8 bytes)
+    mu      sync.RWMutex
+    updates chan []byte
 }
 
 // NewManager creates a new weather manager
 func NewManager() *Manager {
-	return &Manager{
-		frames:  make([][]byte, 0, 100),
-		updates: make(chan []byte, 100),
-	}
+    return &Manager{
+        frames:  make(map[string]*Frame),
+        updates: make(chan []byte, 100),
+    }
 }
 
 // Run is the main loop
 func (m *Manager) Run() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+    ticker := time.NewTicker(10 * time.Second)
+    defer ticker.Stop()
 
-	for {
-		select {
-		case frame := <-m.updates:
-			// Store raw frame
-			m.mu.Lock()
-			m.frames = append(m.frames, frame)
-			
-			// Limit stored frames to prevent memory bloat
-			if len(m.frames) > 100 {
-				m.frames = m.frames[1:]
-			}
-			m.mu.Unlock()
-			
-			log.Printf("Weather: Received frame (%d bytes)", len(frame))
+    for {
+        select {
+        case frame := <-m.updates:
+            m.storeFrame(frame)
 
-		case <-ticker.C:
-			// Periodic cleanup - clear old frames
-			m.mu.Lock()
-			// Keep frames fresh - weather data is continuously updated
-			// Clear buffer periodically to ensure fresh data
-			if len(m.frames) > 0 {
-				log.Printf("Weather: Clearing %d old frames", len(m.frames))
-				m.frames = make([][]byte, 0, 100)
-			}
-			m.mu.Unlock()
-		}
-	}
+        case <-ticker.C:
+            m.cleanupOldFrames()
+        }
+    }
+}
+
+// storeFrame stores a frame with deduplication
+func (m *Manager) storeFrame(data []byte) {
+    if len(data) < 8 {
+        log.Printf("Weather Manager: Frame too short (%d bytes), ignoring", len(data))
+        return
+    }
+
+    // Use first 8 bytes (UAT header) as signature for deduplication
+    sig := string(data[:8])
+
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    // Check if this is a new frame or update
+    if existing, ok := m.frames[sig]; ok {
+        // Same frame received again - just update timestamp
+        existing.Timestamp = time.Now()
+    } else {
+        // New frame
+        m.frames[sig] = &Frame{
+            Data:      data,
+            Timestamp: time.Now(),
+        }
+        log.Printf("Weather Manager: New frame (%d bytes), total frames: %d", len(data), len(m.frames))
+    }
+
+    // Limit total frames to prevent memory bloat
+    if len(m.frames) > 100 {
+        m.removeOldestFrame()
+    }
+}
+
+// removeOldestFrame removes the oldest frame when limit is reached
+func (m *Manager) removeOldestFrame() {
+    var oldestKey string
+    var oldestTime time.Time
+
+    for key, frame := range m.frames {
+        if oldestKey == "" || frame.Timestamp.Before(oldestTime) {
+            oldestKey = key
+            oldestTime = frame.Timestamp
+        }
+    }
+
+    if oldestKey != "" {
+        delete(m.frames, oldestKey)
+        log.Printf("Weather Manager: Removed oldest frame, total frames: %d", len(m.frames))
+    }
+}
+
+// cleanupOldFrames removes frames older than 60 seconds
+func (m *Manager) cleanupOldFrames() {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+
+    now := time.Now()
+    removed := 0
+
+    for key, frame := range m.frames {
+        if now.Sub(frame.Timestamp) > 60*time.Second {
+            delete(m.frames, key)
+            removed++
+        }
+    }
+
+    if removed > 0 {
+        log.Printf("Weather Manager: Cleaned up %d old frames, remaining: %d", removed, len(m.frames))
+    }
 }
 
 // Updates returns the channel for sending weather frame updates
 func (m *Manager) Updates() chan<- []byte {
-	return m.updates
+    return m.updates
 }
 
-// GetFrames returns all current weather frames and clears the buffer
-// This prevents sending duplicate frames
+// GetFrames returns all current weather frames WITHOUT clearing
+// Frames are sent repeatedly until they expire (60s)
 func (m *Manager) GetFrames() [][]byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+    m.mu.RLock()
+    defer m.mu.RUnlock()
 
-	if len(m.frames) == 0 {
-		return nil
-	}
+    if len(m.frames) == 0 {
+        return nil
+    }
 
-	// Return frames and clear buffer
-	frames := make([][]byte, len(m.frames))
-	copy(frames, m.frames)
-	m.frames = make([][]byte, 0, 100)
+    // Return all frames without clearing
+    frames := make([][]byte, 0, len(m.frames))
+    for _, frame := range m.frames {
+        frames = append(frames, frame.Data)
+    }
 
-	return frames
+    return frames
 }
 
 // HasWeather returns true if weather frames are available
 func (m *Manager) HasWeather() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.frames) > 0
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    return len(m.frames) > 0
 }
 
 // Count returns the number of buffered weather frames
 func (m *Manager) Count() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.frames)
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    return len(m.frames)
+}
+
+// GetFrameAge returns the age of the oldest frame
+func (m *Manager) GetFrameAge() time.Duration {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+
+    if len(m.frames) == 0 {
+        return 0
+    }
+
+    now := time.Now()
+    var oldest time.Time
+
+    for _, frame := range m.frames {
+        if oldest.IsZero() || frame.Timestamp.Before(oldest) {
+            oldest = frame.Timestamp
+        }
+    }
+
+    return now.Sub(oldest)
 }

@@ -39,7 +39,7 @@ func (c *WeatherClient) Read() error {
 		for scanner.Scan() {
 			line := scanner.Text()
 
-			// Format from dump978 raw port: +hexdata;rs=X;t=timestamp;
+			// Format from dump978 raw port: +hexdata;rssi=X;t=timestamp;
 			// + prefix = uplink (weather), - prefix = downlink (traffic)
 			if len(line) == 0 || line[0] != '+' {
 				continue // Skip non-uplink frames
@@ -50,6 +50,7 @@ func (c *WeatherClient) Read() error {
 			if len(parts) < 1 {
 				continue
 			}
+			log.Printf(parts[0])
 
 			// Decode hex to raw bytes
 			frame, err := hex.DecodeString(parts[0])
@@ -58,6 +59,12 @@ func (c *WeatherClient) Read() error {
 				continue
 			}
 
+			// Validate frame length - UAT uplink should be exactly 432 bytes
+			if len(frame) != 432 {
+				log.Printf("Warning: UAT frame has unexpected length %d (expected 432)", len(frame))
+				continue
+			}
+			log.Printf("Raw Frame Received in weather client: %v",frame)
 			// Send raw frame to weather manager
 			select {
 			case c.weatherOut <- frame:
