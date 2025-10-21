@@ -1,7 +1,6 @@
 package weather
 
 import (
-    //"bytes"
     "log"
     "sync"
     "time"
@@ -67,7 +66,7 @@ func (m *Manager) storeFrame(data []byte) {
             Data:      data,
             Timestamp: time.Now(),
         }
-        log.Printf("Weather Manager: New frame (%d bytes), total frames: %d", len(data), len(m.frames))
+        
     }
 
     // Limit total frames to prevent memory bloat
@@ -90,7 +89,7 @@ func (m *Manager) removeOldestFrame() {
 
     if oldestKey != "" {
         delete(m.frames, oldestKey)
-        log.Printf("Weather Manager: Removed oldest frame, total frames: %d", len(m.frames))
+        
     }
 }
 
@@ -109,9 +108,6 @@ func (m *Manager) cleanupOldFrames() {
         }
     }
 
-    if removed > 0 {
-        log.Printf("Weather Manager: Cleaned up %d old frames, remaining: %d", removed, len(m.frames))
-    }
 }
 
 // Updates returns the channel for sending weather frame updates

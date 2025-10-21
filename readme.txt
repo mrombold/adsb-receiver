@@ -11,6 +11,12 @@ http://woodair.net/sbs/article/barebones42_socket_data.htm
 
 
 
+Check network bandwidth usage:
+
+ifstat -i wlan0 1
+
+
+
 Spy on dump978 output:
 
 sudo netcat localhost 30978 | hexdump -C | head

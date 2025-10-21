@@ -50,7 +50,6 @@ func (c *WeatherClient) Read() error {
 			if len(parts) < 1 {
 				continue
 			}
-			log.Printf(parts[0])
 
 			// Decode hex to raw bytes
 			frame, err := hex.DecodeString(parts[0])
@@ -64,7 +63,6 @@ func (c *WeatherClient) Read() error {
 				log.Printf("Warning: UAT frame has unexpected length %d (expected 432)", len(frame))
 				continue
 			}
-			log.Printf("Raw Frame Received in weather client: %v",frame)
 			// Send raw frame to weather manager
 			select {
 			case c.weatherOut <- frame:

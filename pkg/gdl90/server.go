@@ -161,7 +161,7 @@ func (s *Server) Serve() error {
 			if len(frames) > 0 {
 				for _, frame := range frames {
 					// Wrap raw UAT frame in GDL90 uplink message
-					weatherMsg := MakeUplinkData(frame)
+					weatherMsg := MakeUplinkData(frame)				
 					
 					if _, err := conn.WriteToUDP(weatherMsg, s.targetAddr); err != nil {
 						log.Printf("Error sending weather: %v", err)
