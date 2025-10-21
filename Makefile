@@ -69,8 +69,33 @@ logs-follow:
 # Clean build artifacts
 .PHONY: clean
 clean:
-	@echo "Cleaning..."
+	@echo "Cleaning build artifacts..."
 	rm -f $(BINARY_NAME)
+	go clean
+
+# Deep clean including caches
+.PHONY: clean-all
+clean-all: clean
+	@echo "Cleaning all caches..."
+	go clean -cache -modcache -testcache
+	rm -rf ~/.cache/go-build
+
+# Clean rebuild
+.PHONY: rebuild-clean
+rebuild-clean: clean-all
+	@echo "Clean rebuild..."
+	go build -v -o $(BINARY_NAME) ./cmd/stratux-aggregator
+	@echo "✓ Clean build complete!"
+
+# Clean deploy
+.PHONY: deploy-clean
+deploy-clean: clean-all
+	@echo "Clean rebuild and deploy..."
+	sudo systemctl stop $(SERVICE_NAME)
+	go build -v -o $(BINARY_NAME) ./cmd/stratux-aggregator
+	sudo systemctl start $(SERVICE_NAME)
+	@sleep 1
+	sudo systemctl status $(SERVICE_NAME) --no-pager -l
 
 # Run locally without service (for testing)
 .PHONY: run
@@ -89,6 +114,12 @@ install-service:
 	sudo systemctl daemon-reload
 	sudo systemctl enable $(SERVICE_NAME)
 	@echo "Service installed and enabled!"
+
+
+
+
+
+
 
 # Show help
 .PHONY: help

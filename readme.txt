@@ -10,9 +10,12 @@ adsb1090 basestation data format:
 http://woodair.net/sbs/article/barebones42_socket_data.htm
 
 
+Check data sent to EFB:
+sudo tcpdump -i any -s 0 -X 'port 4000'  (hex and ascii)
+sudo tcpdump -i any -s 0 -A 'port 4000'  (ascii)
+
 
 Check network bandwidth usage:
-
 ifstat -i wlan0 1
 
 
