@@ -81,7 +81,7 @@ func (m *Manager) Run() {
 		m.hasData = false
 		m.mu.Unlock()
 		
-		log.Println("AHRS: Connection lost, reconnecting...")
+		//log.Println("AHRS: Connection lost, reconnecting...")
 		time.Sleep(1 * time.Second)
 	}
 }

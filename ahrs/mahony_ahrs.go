@@ -61,7 +61,7 @@ type MahonyAHRS struct {
 func NewMahonyAHRS(sampleFreq float64) *MahonyAHRS {
 	return &MahonyAHRS{
 		q:          Quaternion{W: 1.0, X: 0.0, Y: 0.0, Z: 0.0}, // Identity quaternion
-		kp:         2.0,  // Proportional gain (tune for response speed)
+		kp:         5.0,  // Proportional gain (tune for response speed)
 		ki:         0.01, // Integral gain (tune for drift compensation)
 		sampleFreq: sampleFreq,
 	}

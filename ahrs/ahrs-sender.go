@@ -35,253 +35,436 @@ const (
 	ismOutXLG     = 0x22
 	ismOutXLA     = 0x28
 	ismExpectedID = 0x6B
-
 )
 
-// Quaternion represents orientation
-type Quaternion struct {
-	W, X, Y, Z float64
+// ========== MAHONY DCM IMPLEMENTATION ==========
+
+// Vec3 represents a 3D vector
+type Vec3 struct {
+	X, Y, Z float64
+}
+
+// Mat3 represents a 3x3 matrix (stored as [row][col])
+type Mat3 [3][3]float64
+
+// MahonyFilter implements the Mahony DCM attitude filter
+type MahonyFilter struct {
+	dcm    Mat3    // Direction Cosine Matrix (rotation from world to body)
+	bias   Vec3    // Gyro bias estimate
+	KpAcc  float64 // Proportional gain for accelerometer
+	KpMag  float64 // Proportional gain for magnetometer
+	Ki     float64 // Integral gain for bias correction
 }
 
 // EulerAngles represents roll, pitch, yaw in radians
 type EulerAngles struct {
-	Roll  float64 // Rotation around X axis
-	Pitch float64 // Rotation around Y axis
-	Yaw   float64 // Rotation around Z axis (heading)
+	Roll  float64 // Roll angle (radians)
+	Pitch float64 // Pitch angle (radians)
+	Yaw   float64 // Yaw/Heading angle (radians)
 }
 
-// MahonyAHRS implements the Mahony sensor fusion algorithm
-type MahonyAHRS struct {
-	q           Quaternion // Orientation quaternion
-	kp          float64    // Proportional gain
-	ki          float64    // Integral gain
-	integralFBx float64    // Integral feedback terms
-	integralFBy float64
-	integralFBz float64
-	sampleFreq  float64 // Sample frequency in Hz
+// NewMahonyFilter creates a new Mahony filter with default gains
+func NewMahonyFilter() *MahonyFilter {
+	return &MahonyFilter{
+		dcm:    identityMat3(),
+		bias:   Vec3{0, 0, 0},
+		KpAcc:  5.0,  // Proportional gain for accel
+		KpMag:  5.0,  // Proportional gain for mag
+		Ki:     0.01, // Integral gain for bias
+	}
 }
+
+// Update integrates gyro, accel, and optional magnetometer measurements
+func (f *MahonyFilter) Update(gyro, accel Vec3, mag *Vec3, dt float64) {
+	if dt <= 0.0 || !isFinite(dt) {
+		return
+	}
+
+	// 1) Compute correction vector in body frame
+	errB := f.correctionBody(accel, mag)
+
+	// 2) PI controller on gyro bias
+	if f.Ki > 0.0 && errB.allFinite() {
+		f.bias = f.bias.add(errB.scale(f.Ki * dt))
+	}
+
+	// 3) Corrected angular rate
+	omegaB := gyro.add(errB.scale(f.KpAcc)).sub(f.bias)
+	if !omegaB.allFinite() {
+		return
+	}
+
+	// 4) Integrate DCM: R_dot = R * [ω]_x (forward Euler)
+	wx := skewSymmetric(omegaB)
+	dcmDot := f.dcm.multiply(wx)
+	f.dcm = f.dcm.add(dcmDot.scale(dt))
+
+	// 5) Keep DCM orthonormal (Gram-Schmidt on columns)
+	f.orthonormalize()
+}
+
+// correctionBody computes the correction vector in body frame
+func (f *MahonyFilter) correctionBody(accel Vec3, mag *Vec3) Vec3 {
+	err := Vec3{0, 0, 0}
+
+	// Gravity: world +Z up
+	zWorld := Vec3{0, 0, 1}
+
+	// Predicted gravity direction in body frame (world->body)
+	gEstBody := f.dcm.transpose().multiplyVec(zWorld)
+
+	// Measured gravity (normalize accel)
+	an := accel.norm()
+	if isFinite(an) && an > 0.5 {
+		gMeasBody := accel.scale(1.0 / an)
+		if gMeasBody.allFinite() && gEstBody.allFinite() {
+			err = err.add(gMeasBody.cross(gEstBody))
+		}
+	}
+
+	// Magnetometer: use horizontal component for heading
+	if mag != nil {
+		mn := mag.norm()
+		if isFinite(mn) && mn > 1e-6 {
+			mB := mag.scale(1.0 / mn)
+
+			// Remove vertical component to isolate heading
+			mVert := mB.dot(gEstBody)
+			mHB := mB.sub(gEstBody.scale(mVert))
+			mh := mHB.norm()
+
+			if isFinite(mh) && mh > 1e-6 {
+				mHB = mHB.scale(1.0 / mh)
+
+				// World +X expressed in body
+				exB := f.dcm.transpose().multiplyVec(Vec3{1, 0, 0})
+
+				// Weight magnetometer relative to accel term
+				w := f.KpMag / math.Max(f.KpAcc, 1e-6)
+				err = err.add(mHB.cross(exB).scale(w))
+			}
+		}
+	}
+
+	if !err.allFinite() {
+		return Vec3{0, 0, 0}
+	}
+	return err
+}
+
+// orthonormalize performs Gram-Schmidt orthonormalization on DCM columns
+func (f *MahonyFilter) orthonormalize() {
+	c0 := f.dcm.col(0)
+	c1 := f.dcm.col(1)
+
+	// 1) Normalize first column
+	n0 := c0.norm()
+	if isFinite(n0) && n0 > 0.0 {
+		c0 = c0.scale(1.0 / n0)
+	} else {
+		c0 = Vec3{1, 0, 0}
+	}
+
+	// 2) Make second column orthogonal to first and normalize
+	c1 = c1.sub(c0.scale(c0.dot(c1)))
+	n1 := c1.norm()
+	if isFinite(n1) && n1 > 0.0 {
+		c1 = c1.scale(1.0 / n1)
+	} else {
+		c1 = Vec3{0, 1, 0}
+	}
+
+	// 3) Third column from cross product
+	c2 := c0.cross(c1)
+	n2 := c2.norm()
+	if isFinite(n2) && n2 > 0.0 {
+		c2 = c2.scale(1.0 / n2)
+	} else {
+		c2 = Vec3{0, 0, 1}
+	}
+
+	f.dcm.setCol(0, c0)
+	f.dcm.setCol(1, c1)
+	f.dcm.setCol(2, c2)
+}
+
+// GetEuler extracts Euler angles from DCM (Aerospace ZYX: yaw-pitch-roll)
+func (f *MahonyFilter) GetEuler() EulerAngles {
+	R := f.dcm
+	// Clamp for safety against floating point drift
+	s := clamp(R[2][0], -1.0, 1.0)
+	pitch := -math.Asin(s)
+	roll := math.Atan2(R[2][1], R[2][2])
+	yaw := math.Atan2(R[1][0], R[0][0])
+	return EulerAngles{Roll: roll, Pitch: pitch, Yaw: yaw}
+}
+
+// GetBias returns the current gyro bias estimate
+func (f *MahonyFilter) GetBias() Vec3 {
+	return f.bias
+}
+
+// GetDCM returns the current Direction Cosine Matrix
+func (f *MahonyFilter) GetDCM() Mat3 {
+	return f.dcm
+}
+
+// --- Vec3 methods ---
+
+func (v Vec3) add(other Vec3) Vec3 {
+	return Vec3{v.X + other.X, v.Y + other.Y, v.Z + other.Z}
+}
+
+func (v Vec3) sub(other Vec3) Vec3 {
+	return Vec3{v.X - other.X, v.Y - other.Y, v.Z - other.Z}
+}
+
+func (v Vec3) scale(s float64) Vec3 {
+	return Vec3{v.X * s, v.Y * s, v.Z * s}
+}
+
+func (v Vec3) dot(other Vec3) float64 {
+	return v.X*other.X + v.Y*other.Y + v.Z*other.Z
+}
+
+func (v Vec3) cross(other Vec3) Vec3 {
+	return Vec3{
+		v.Y*other.Z - v.Z*other.Y,
+		v.Z*other.X - v.X*other.Z,
+		v.X*other.Y - v.Y*other.X,
+	}
+}
+
+func (v Vec3) norm() float64 {
+	return math.Sqrt(v.X*v.X + v.Y*v.Y + v.Z*v.Z)
+}
+
+func (v Vec3) allFinite() bool {
+	return isFinite(v.X) && isFinite(v.Y) && isFinite(v.Z)
+}
+
+// --- Mat3 methods ---
+
+func identityMat3() Mat3 {
+	return Mat3{
+		{1, 0, 0},
+		{0, 1, 0},
+		{0, 0, 1},
+	}
+}
+
+func (m Mat3) add(other Mat3) Mat3 {
+	var result Mat3
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			result[i][j] = m[i][j] + other[i][j]
+		}
+	}
+	return result
+}
+
+func (m Mat3) scale(s float64) Mat3 {
+	var result Mat3
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			result[i][j] = m[i][j] * s
+		}
+	}
+	return result
+}
+
+func (m Mat3) multiply(other Mat3) Mat3 {
+	var result Mat3
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			sum := 0.0
+			for k := 0; k < 3; k++ {
+				sum += m[i][k] * other[k][j]
+			}
+			result[i][j] = sum
+		}
+	}
+	return result
+}
+
+func (m Mat3) multiplyVec(v Vec3) Vec3 {
+	return Vec3{
+		m[0][0]*v.X + m[0][1]*v.Y + m[0][2]*v.Z,
+		m[1][0]*v.X + m[1][1]*v.Y + m[1][2]*v.Z,
+		m[2][0]*v.X + m[2][1]*v.Y + m[2][2]*v.Z,
+	}
+}
+
+func (m Mat3) transpose() Mat3 {
+	return Mat3{
+		{m[0][0], m[1][0], m[2][0]},
+		{m[0][1], m[1][1], m[2][1]},
+		{m[0][2], m[1][2], m[2][2]},
+	}
+}
+
+func (m Mat3) col(idx int) Vec3 {
+	return Vec3{m[0][idx], m[1][idx], m[2][idx]}
+}
+
+func (m *Mat3) setCol(idx int, v Vec3) {
+	m[0][idx] = v.X
+	m[1][idx] = v.Y
+	m[2][idx] = v.Z
+}
+
+func skewSymmetric(v Vec3) Mat3 {
+	return Mat3{
+		{0, -v.Z, v.Y},
+		{v.Z, 0, -v.X},
+		{-v.Y, v.X, 0},
+	}
+}
+
+func isFinite(x float64) bool {
+	return !math.IsNaN(x) && !math.IsInf(x, 0)
+}
+
+func clamp(x, min, max float64) float64 {
+	if x < min {
+		return min
+	}
+	if x > max {
+		return max
+	}
+	return x
+}
+
+// ========== AHRS DATA PUBLISHER ==========
 
 // AHRSData represents the current attitude
 type AHRSData struct {
-    Timestamp time.Time `json:"timestamp"`
-    Roll      float64   `json:"roll"`      // degrees
-    Pitch     float64   `json:"pitch"`     // degrees
-    Yaw       float64   `json:"yaw"`       // degrees (heading)
-    RollRate  float64   `json:"roll_rate"` // deg/s
-    PitchRate float64   `json:"pitch_rate"` // deg/s
-    YawRate   float64   `json:"yaw_rate"`  // deg/s
+	Timestamp time.Time `json:"timestamp"`
+	Roll      float64   `json:"roll"`      // degrees
+	Pitch     float64   `json:"pitch"`     // degrees
+	Yaw       float64   `json:"yaw"`       // degrees (heading)
+	RollRate  float64   `json:"roll_rate"` // deg/s
+	PitchRate float64   `json:"pitch_rate"` // deg/s
+	YawRate   float64   `json:"yaw_rate"`  // deg/s
 }
 
 // AHRSPublisher publishes AHRS data via Unix socket
 type AHRSPublisher struct {
-    socketPath string
-    listener   net.Listener
-    clients    []net.Conn
-    clientsMu  sync.Mutex
-    data       AHRSData
-    dataMu     sync.RWMutex
+	socketPath string
+	listener   net.Listener
+	clients    []net.Conn
+	clientsMu  sync.Mutex
+	data       AHRSData
+	dataMu     sync.RWMutex
 }
 
+// NewAHRSPublisher creates a new AHRS publisher
+func NewAHRSPublisher(socketPath string) (*AHRSPublisher, error) {
+	os.Remove(socketPath)
+	
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create socket: %w", err)
+	}
+	
+	os.Chmod(socketPath, 0666)
+	
+	return &AHRSPublisher{
+		socketPath: socketPath,
+		listener:   listener,
+		clients:    make([]net.Conn, 0),
+	}, nil
+}
 
-// NewMahonyAHRS creates a new Mahony AHRS filter
-func NewMahonyAHRS(sampleFreq float64) *MahonyAHRS {
-	return &MahonyAHRS{
-		q:          Quaternion{W: 1.0, X: 0.0, Y: 0.0, Z: 0.0}, // Identity quaternion
-		kp:         5.0,  // Proportional gain (tune for response speed)
-		ki:         0.01, // Integral gain (tune for drift compensation)
-		sampleFreq: sampleFreq,
+// UpdateData updates the current AHRS data
+func (p *AHRSPublisher) UpdateData(roll, pitch, yaw, rollRate, pitchRate, yawRate float64) {
+	p.dataMu.Lock()
+	defer p.dataMu.Unlock()
+	
+	p.data = AHRSData{
+		Timestamp: time.Now(),
+		Roll:      roll,
+		Pitch:     pitch,
+		Yaw:       yaw,
+		RollRate:  rollRate,
+		PitchRate: pitchRate,
+		YawRate:   yawRate,
 	}
 }
 
-// Update performs one iteration of the Mahony AHRS algorithm
-// gx, gy, gz: gyroscope in rad/s
-// ax, ay, az: accelerometer in m/s² (any units, will be normalized)
-// mx, my, mz: magnetometer in μT (any units, will be normalized)
-func (m *MahonyAHRS) Update(gx, gy, gz, ax, ay, az, mx, my, mz float64) {
-	dt := 1.0 / m.sampleFreq
-	q0, q1, q2, q3 := m.q.W, m.q.X, m.q.Y, m.q.Z
-
-	// Normalize accelerometer measurement
-	recipNorm := 1.0 / math.Sqrt(ax*ax+ay*ay+az*az)
-	ax *= recipNorm
-	ay *= recipNorm
-	az *= recipNorm
-
-	// Normalize magnetometer measurement
-	recipNorm = 1.0 / math.Sqrt(mx*mx+my*my+mz*mz)
-	mx *= recipNorm
-	my *= recipNorm
-	mz *= recipNorm
-
-	// Reference direction of Earth's magnetic field
-	hx := 2.0*mx*(0.5-q2*q2-q3*q3) + 2.0*my*(q1*q2-q0*q3) + 2.0*mz*(q1*q3+q0*q2)
-	hy := 2.0*mx*(q1*q2+q0*q3) + 2.0*my*(0.5-q1*q1-q3*q3) + 2.0*mz*(q2*q3-q0*q1)
-	bx := math.Sqrt(hx*hx + hy*hy)
-	bz := 2.0*mx*(q1*q3-q0*q2) + 2.0*my*(q2*q3+q0*q1) + 2.0*mz*(0.5-q1*q1-q2*q2)
-
-	// Estimated direction of gravity and magnetic field
-	vx := 2.0 * (q1*q3 - q0*q2)
-	vy := 2.0 * (q0*q1 + q2*q3)
-	vz := q0*q0 - q1*q1 - q2*q2 + q3*q3
-	wx := 2.0*bx*(0.5-q2*q2-q3*q3) + 2.0*bz*(q1*q3-q0*q2)
-	wy := 2.0*bx*(q1*q2-q0*q3) + 2.0*bz*(q0*q1+q2*q3)
-	wz := 2.0*bx*(q0*q2+q1*q3) + 2.0*bz*(0.5-q1*q1-q2*q2)
-
-	// Error is cross product between estimated and measured direction of gravity and magnetic field
-	ex := (ay*vz - az*vy) + (my*wz - mz*wy)
-	ey := (az*vx - ax*vz) + (mz*wx - mx*wz)
-	ez := (ax*vy - ay*vx) + (mx*wy - my*wx)
-
-	// Integral feedback
-	if m.ki > 0.0 {
-		m.integralFBx += m.ki * ex * dt
-		m.integralFBy += m.ki * ey * dt
-		m.integralFBz += m.ki * ez * dt
-		gx += m.integralFBx
-		gy += m.integralFBy
-		gz += m.integralFBz
-	}
-
-	// Proportional feedback
-	gx += m.kp * ex
-	gy += m.kp * ey
-	gz += m.kp * ez
-
-	// Cap gyro error corrections at 0.1 rad/sec to prevent large corrections
-	const maxGyroError = 0.1
-	gx = clamp(gx, -maxGyroError, maxGyroError)
-	gy = clamp(gy, -maxGyroError, maxGyroError)
-	gz = clamp(gz, -maxGyroError, maxGyroError)
-
-	// Integrate rate of change of quaternion
-	gx *= 0.5 * dt
-	gy *= 0.5 * dt
-	gz *= 0.5 * dt
-	qa := q0
-	qb := q1
-	qc := q2
-	q0 += (-qb*gx - qc*gy - q3*gz)
-	q1 += (qa*gx + qc*gz - q3*gy)
-	q2 += (qa*gy - qb*gz + q3*gx)
-	q3 += (qa*gz + qb*gy - qc*gx)
-
-	// Normalize quaternion
-	recipNorm = 1.0 / math.Sqrt(q0*q0+q1*q1+q2*q2+q3*q3)
-	m.q.W = q0 * recipNorm
-	m.q.X = q1 * recipNorm
-	m.q.Y = q2 * recipNorm
-	m.q.Z = q3 * recipNorm
+// GetData returns the current AHRS data
+func (p *AHRSPublisher) GetData() AHRSData {
+	p.dataMu.RLock()
+	defer p.dataMu.RUnlock()
+	return p.data
 }
 
-// UpdateIMU performs one iteration without magnetometer (6DOF mode)
-func (m *MahonyAHRS) UpdateIMU(gx, gy, gz, ax, ay, az float64) {
-	dt := 1.0 / m.sampleFreq
-	q0, q1, q2, q3 := m.q.W, m.q.X, m.q.Y, m.q.Z
-
-	// Normalize accelerometer measurement
-	recipNorm := 1.0 / math.Sqrt(ax*ax+ay*ay+az*az)
-	ax *= recipNorm
-	ay *= recipNorm
-	az *= recipNorm
-
-	// Estimated direction of gravity
-	vx := 2.0 * (q1*q3 - q0*q2)
-	vy := 2.0 * (q0*q1 + q2*q3)
-	vz := q0*q0 - q1*q1 - q2*q2 + q3*q3
-
-	// Error is cross product between estimated and measured direction of gravity
-	ex := ay*vz - az*vy
-	ey := az*vx - ax*vz
-	ez := ax*vy - ay*vx
-
-	// Integral feedback
-	if m.ki > 0.0 {
-		m.integralFBx += m.ki * ex * dt
-		m.integralFBy += m.ki * ey * dt
-		m.integralFBz += m.ki * ez * dt
-		gx += m.integralFBx
-		gy += m.integralFBy
-		gz += m.integralFBz
-	}
-
-	// Proportional feedback
-	gx += m.kp * ex
-	gy += m.kp * ey
-	gz += m.kp * ez
-
-	// Cap gyro error corrections
-	const maxGyroError = 0.1
-	gx = clamp(gx, -maxGyroError, maxGyroError)
-	gy = clamp(gy, -maxGyroError, maxGyroError)
-	gz = clamp(gz, -maxGyroError, maxGyroError)
-
-	// Integrate rate of change of quaternion
-	gx *= 0.5 * dt
-	gy *= 0.5 * dt
-	gz *= 0.5 * dt
-	qa := q0
-	qb := q1
-	qc := q2
-	q0 += (-qb*gx - qc*gy - q3*gz)
-	q1 += (qa*gx + qc*gz - q3*gy)
-	q2 += (qa*gy - qb*gz + q3*gx)
-	q3 += (qa*gz + qb*gy - qc*gx)
-
-	// Normalize quaternion
-	recipNorm = 1.0 / math.Sqrt(q0*q0+q1*q1+q2*q2+q3*q3)
-	m.q.W = q0 * recipNorm
-	m.q.X = q1 * recipNorm
-	m.q.Y = q2 * recipNorm
-	m.q.Z = q3 * recipNorm
+// Run starts accepting client connections
+func (p *AHRSPublisher) Run() {
+	go func() {
+		for {
+			conn, err := p.listener.Accept()
+			if err != nil {
+				log.Printf("Accept error: %v", err)
+				continue
+			}
+			
+			p.clientsMu.Lock()
+			p.clients = append(p.clients, conn)
+			p.clientsMu.Unlock()
+			
+			log.Printf("Client connected (total: %d)", len(p.clients))
+		}
+	}()
 }
 
-// GetEulerAngles converts quaternion to Euler angles (roll, pitch, yaw)
-func (m *MahonyAHRS) GetEulerAngles() EulerAngles {
-	q0, q1, q2, q3 := m.q.W, m.q.X, m.q.Y, m.q.Z
-
-	// Roll (x-axis rotation)
-	sinr_cosp := 2.0 * (q0*q1 + q2*q3)
-	cosr_cosp := 1.0 - 2.0*(q1*q1+q2*q2)
-	roll := math.Atan2(sinr_cosp, cosr_cosp)
-
-	// Pitch (y-axis rotation)
-	sinp := 2.0 * (q0*q2 - q3*q1)
-	var pitch float64
-	if math.Abs(sinp) >= 1.0 {
-		pitch = math.Copysign(math.Pi/2, sinp)
-	} else {
-		pitch = math.Asin(sinp)
+// Broadcast sends current data to all connected clients
+func (p *AHRSPublisher) Broadcast() {
+	data := p.GetData()
+	
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("JSON marshal error: %v", err)
+		return
 	}
-
-	// Yaw (z-axis rotation)
-	siny_cosp := 2.0 * (q0*q3 + q1*q2)
-	cosy_cosp := 1.0 - 2.0*(q2*q2+q3*q3)
-	yaw := math.Atan2(siny_cosp, cosy_cosp)
-
-	return EulerAngles{
-		Roll:  roll,
-		Pitch: pitch,
-		Yaw:   yaw,
+	
+	jsonData = append(jsonData, '\n')
+	
+	p.clientsMu.Lock()
+	defer p.clientsMu.Unlock()
+	
+	activeClients := make([]net.Conn, 0, len(p.clients))
+	for _, client := range p.clients {
+		client.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		_, err := client.Write(jsonData)
+		if err == nil {
+			activeClients = append(activeClients, client)
+		} else {
+			client.Close()
+		}
 	}
+	p.clients = activeClients
 }
 
-
-// Helper functions
-func clamp(val, min, max float64) float64 {
-	if val < min {
-		return min
+// Close closes the publisher
+func (p *AHRSPublisher) Close() error {
+	p.clientsMu.Lock()
+	defer p.clientsMu.Unlock()
+	
+	for _, client := range p.clients {
+		client.Close()
 	}
-	if val > max {
-		return max
+	
+	if p.listener != nil {
+		p.listener.Close()
 	}
-	return val
+	
+	os.Remove(p.socketPath)
+	return nil
 }
 
-func round(x float64) float64 {
-	return math.Floor(x + 0.5)
-}
+// ========== IMU HARDWARE FUNCTIONS ==========
 
-// IMU initialization and reading functions
 func initMMC(dev *i2c.Device) error {
 	buf := make([]byte, 1)
 	if err := dev.ReadReg(mmcWhoAmI, buf); err != nil {
@@ -296,25 +479,56 @@ func initMMC(dev *i2c.Device) error {
 	}
 	time.Sleep(10 * time.Millisecond)
 
-	if err := dev.WriteReg(mmcControl0, []byte{0x20}); err != nil {
-		return err
-	}
-
-	if err := dev.WriteReg(mmcControl2, []byte{0x81}); err != nil {
-		return err
-	}
-
 	if err := dev.WriteReg(mmcControl0, []byte{0x08}); err != nil {
 		return err
 	}
-	time.Sleep(1 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 
 	if err := dev.WriteReg(mmcControl0, []byte{0x10}); err != nil {
 		return err
 	}
-	time.Sleep(1 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+
+	if err := dev.WriteReg(mmcControl2, []byte{0x80}); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func readMMC(dev *i2c.Device) ([3]float64, error) {
+	if err := dev.WriteReg(mmcControl0, []byte{0x01}); err != nil {
+		return [3]float64{}, err
+	}
+
+	for i := 0; i < 10; i++ {
+		buf := make([]byte, 1)
+		if err := dev.ReadReg(mmcControl0, buf); err != nil {
+			return [3]float64{}, err
+		}
+		if buf[0]&0x01 == 0 {
+			break
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	data := make([]byte, 9)
+	if err := dev.ReadReg(mmcXOut0, data); err != nil {
+		return [3]float64{}, err
+	}
+
+	rawX := (uint32(data[0]) << 12) | (uint32(data[1]) << 4) | (uint32(data[6]) >> 4)
+	rawY := (uint32(data[2]) << 12) | (uint32(data[3]) << 4) | (uint32(data[7]) >> 4)
+	rawZ := (uint32(data[4]) << 12) | (uint32(data[5]) << 4) | (uint32(data[8]) >> 4)
+
+	const offset = 524288.0
+	const scale = 16384.0
+
+	x := (float64(rawX) - offset) / scale
+	y := (float64(rawY) - offset) / scale
+	z := (float64(rawZ) - offset) / scale
+
+	return [3]float64{x, y, z}, nil
 }
 
 func initISM(dev *i2c.Device) error {
@@ -329,55 +543,21 @@ func initISM(dev *i2c.Device) error {
 	if err := dev.WriteReg(ismCtrl3C, []byte{0x01}); err != nil {
 		return err
 	}
-	time.Sleep(50 * time.Millisecond)
-
-	if err := dev.WriteReg(ismCtrl3C, []byte{0x44}); err != nil {
-		return err
-	}
-
-	// 416 Hz, ±16g
-	if err := dev.WriteReg(ismCtrl1XL, []byte{0x64}); err != nil {
-		return err
-	}
-
-	// 416 Hz, ±2000 dps
-	if err := dev.WriteReg(ismCtrl2G, []byte{0x6C}); err != nil {
-		return err
-	}
-
 	time.Sleep(10 * time.Millisecond)
+
+	if err := dev.WriteReg(ismCtrl2G, []byte{0x8C}); err != nil {
+		return err
+	}
+
+	if err := dev.WriteReg(ismCtrl1XL, []byte{0x8A}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func readMMC(dev *i2c.Device) ([3]float64, error) {
-	if err := dev.WriteReg(mmcControl0, []byte{0x01}); err != nil {
-		return [3]float64{}, err
-	}
-
-	time.Sleep(10 * time.Millisecond)
-
-	buf := make([]byte, 7)
-	if err := dev.ReadReg(mmcXOut0, buf); err != nil {
-		return [3]float64{}, err
-	}
-
-	rawX := (uint32(buf[0]) << 10) | (uint32(buf[1]) << 2) | (uint32(buf[6]) >> 6)
-	rawY := (uint32(buf[2]) << 10) | (uint32(buf[3]) << 2) | ((uint32(buf[6]) >> 4) & 0x03)
-	rawZ := (uint32(buf[4]) << 10) | (uint32(buf[5]) << 2) | ((uint32(buf[6]) >> 2) & 0x03)
-
-	const resolution = 262144.0
-	const range_uT = 800.0
-
-	x := (float64(rawX) - resolution/2) / (resolution / 2) * range_uT
-	y := (float64(rawY) - resolution/2) / (resolution / 2) * range_uT
-	z := (float64(rawZ) - resolution/2) / (resolution / 2) * range_uT
-
-	return [3]float64{x, y, z}, nil
-}
-
 func readISM(dev *i2c.Device) ([3]float64, [3]float64, error) {
-	deadline := time.Now().Add(50 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	for i := 0; i < 10; i++ {
 		buf := make([]byte, 1)
 		if err := dev.ReadReg(ismStatusReg, buf); err != nil {
 			return [3]float64{}, [3]float64{}, err
@@ -398,7 +578,7 @@ func readISM(dev *i2c.Device) ([3]float64, [3]float64, error) {
 	rawGyroZ := int16(gyroBuf[4]) | int16(gyroBuf[5])<<8
 
 	const gyroSens = 16.4
-	const degToRad = 3.141592653589793 / 180.0
+	const degToRad = math.Pi / 180.0
 
 	gyroX := float64(rawGyroX) / gyroSens * degToRad
 	gyroY := float64(rawGyroY) / gyroSens * degToRad
@@ -423,129 +603,16 @@ func readISM(dev *i2c.Device) ([3]float64, [3]float64, error) {
 	return [3]float64{accelX, accelY, accelZ}, [3]float64{gyroX, gyroY, gyroZ}, nil
 }
 
-
-
-// NewAHRSPublisher creates a new AHRS publisher
-func NewAHRSPublisher(socketPath string) (*AHRSPublisher, error) {
-    // Remove existing socket file if it exists
-    os.Remove(socketPath)
-    
-    listener, err := net.Listen("unix", socketPath)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create socket: %w", err)
-    }
-    
-    // Set socket permissions
-    os.Chmod(socketPath, 0666)
-    
-    return &AHRSPublisher{
-        socketPath: socketPath,
-        listener:   listener,
-        clients:    make([]net.Conn, 0),
-    }, nil
-}
-
-// UpdateData updates the current AHRS data
-func (p *AHRSPublisher) UpdateData(roll, pitch, yaw, rollRate, pitchRate, yawRate float64) {
-    p.dataMu.Lock()
-    defer p.dataMu.Unlock()
-    
-    p.data = AHRSData{
-        Timestamp: time.Now(),
-        Roll:      roll,
-        Pitch:     pitch,
-        Yaw:       yaw,
-        RollRate:  rollRate,
-        PitchRate: pitchRate,
-        YawRate:   yawRate,
-    }
-}
-
-// GetData returns the current AHRS data
-func (p *AHRSPublisher) GetData() AHRSData {
-    p.dataMu.RLock()
-    defer p.dataMu.RUnlock()
-    return p.data
-}
-
-// Run starts accepting client connections
-func (p *AHRSPublisher) Run() {
-    go func() {
-        for {
-            conn, err := p.listener.Accept()
-            if err != nil {
-                log.Printf("Accept error: %v", err)
-                continue
-            }
-            
-            p.clientsMu.Lock()
-            p.clients = append(p.clients, conn)
-            p.clientsMu.Unlock()
-            
-            log.Printf("Client connected (total: %d)", len(p.clients))
-        }
-    }()
-}
-
-// Broadcast sends current data to all connected clients
-func (p *AHRSPublisher) Broadcast() {
-    data := p.GetData()
-    
-    jsonData, err := json.Marshal(data)
-    if err != nil {
-        log.Printf("JSON marshal error: %v", err)
-        return
-    }
-    
-    // Add newline delimiter
-    jsonData = append(jsonData, '\n')
-    
-    p.clientsMu.Lock()
-    defer p.clientsMu.Unlock()
-    
-    // Send to all clients, remove dead connections
-    activeClients := make([]net.Conn, 0, len(p.clients))
-    for _, client := range p.clients {
-        client.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-        _, err := client.Write(jsonData)
-        if err == nil {
-            activeClients = append(activeClients, client)
-        } else {
-            client.Close()
-        }
-    }
-    p.clients = activeClients
-}
-
-// Close closes the publisher
-func (p *AHRSPublisher) Close() error {
-    p.clientsMu.Lock()
-    defer p.clientsMu.Unlock()
-    
-    for _, client := range p.clients {
-        client.Close()
-    }
-    
-    if p.listener != nil {
-        p.listener.Close()
-    }
-    
-    os.Remove(p.socketPath)
-    return nil
-}
-
-
-
+// ========== MAIN PROGRAM ==========
 
 func main() {
-	fmt.Println("=== AHRS GDL90 Sender ===\n")
+	fmt.Println("=== AHRS GDL90 Sender (Mahony DCM) ===\n")
 
-	// Configuration
 	const (
-		sampleRate   = 100.0 // Hz
-		ahrsRate     = 10.0   // Hz (ForeFlight recommends 5Hz for AHRS)
-		i2cBus       = "/dev/i2c-1"
-		useMag       = true  // Set to false for IMU-only (6DOF) mode
+		sampleRate = 100.0  // Hz
+		ahrsRate   = 10.0   // Hz (ForeFlight recommends 5Hz for AHRS)
+		i2cBus     = "/dev/i2c-1"
+		useMag     = true   // Set to false for IMU-only (6DOF) mode
 	)
 
 	// Initialize MMC5983MA magnetometer
@@ -574,9 +641,10 @@ func main() {
 	}
 	fmt.Println("✓ IMU initialized")
 
-	// Create Mahony AHRS filter
-	ahrs := NewMahonyAHRS(sampleRate)
-	fmt.Printf("✓ Mahony AHRS initialized (%.0f Hz)\n\n", sampleRate)
+	// Create Mahony DCM filter
+	filter := NewMahonyFilter()
+	fmt.Printf("✓ Mahony DCM Filter initialized\n")
+	fmt.Printf("  Gains: KpAcc=%.2f, KpMag=%.2f, Ki=%.3f\n\n", filter.KpAcc, filter.KpMag, filter.Ki)
 
 	// Create AHRS publisher
 	const socketPath = "/tmp/ahrs.sock"
@@ -600,7 +668,7 @@ func main() {
 	broadcastTicker := time.NewTicker(time.Duration(1000/ahrsRate) * time.Millisecond)
 	defer broadcastTicker.Stop()
 
-	fmt.Println("Starting AHRS data collection and transmission...")
+	fmt.Println("\nStarting AHRS data collection...")
 	fmt.Printf("Sample rate: %.0f Hz, AHRS send rate: %.0f Hz\n", sampleRate, ahrsRate)
 	if useMag {
 		fmt.Println("Mode: 9DOF (gyro + accel + mag)")
@@ -609,10 +677,11 @@ func main() {
 	}
 	fmt.Println("Press Ctrl+C to stop\n")
 
-	fmt.Println("Starting attitude estimation...")
-	fmt.Println("Press Ctrl+C to stop\n")
 	fmt.Println("Time        Roll      Pitch     Yaw       Heading")
 	fmt.Println("========    =======   =======   =======   =======")
+
+	dt := 1.0 / sampleRate
+	//lastGyro := [3]float64{0, 0, 0}
 
 	for {
 		select {
@@ -628,51 +697,54 @@ func main() {
 				continue
 			}
 
+			// Create Vec3 structures
+			gyroVec := Vec3{X: gyro[0], Y: gyro[1], Z: gyro[2]}
+			accelVec := Vec3{X: accel[0], Y: accel[1], Z: accel[2]}
+
 			if useMag {
 				// Read magnetometer data
 				mag, err := readMMC(mmc)
 				if err != nil {
 					// Fall back to IMU-only mode for this sample
-					ahrs.UpdateIMU(gyro[0], gyro[1], gyro[2], accel[0], accel[1], accel[2])
+					filter.Update(gyroVec, accelVec, nil, dt)
 				} else {
-					// Update AHRS with all 9 DOF
-					ahrs.Update(
-						gyro[0], gyro[1], gyro[2],    // Gyroscope (rad/s)
-						accel[0], accel[1], accel[2], // Accelerometer (m/s²)
-						mag[0], mag[1], mag[2],       // Magnetometer (μT)
-					)
+					// Update with all 9 DOF
+					magVec := Vec3{X: mag[0], Y: mag[1], Z: mag[2]}
+					filter.Update(gyroVec, accelVec, &magVec, dt)
 				}
 			} else {
 				// IMU-only mode (6 DOF)
-				ahrs.UpdateIMU(gyro[0], gyro[1], gyro[2], accel[0], accel[1], accel[2])
+				filter.Update(gyroVec, accelVec, nil, dt)
 			}
 
 			// Get latest orientation
-			euler := ahrs.GetEulerAngles()
-            rollDeg := euler.Roll * 180.0 / math.Pi
-            pitchDeg := euler.Pitch * 180.0 / math.Pi
-            yawDeg := euler.Yaw * 180.0 / math.Pi
+			euler := filter.GetEuler()
+			rollDeg := euler.Roll * 180.0 / math.Pi
+			pitchDeg := euler.Pitch * 180.0 / math.Pi
+			yawDeg := euler.Yaw * 180.0 / math.Pi
 
-            heading := math.Mod(yawDeg, 360.0)
-            if heading < 0 {
-                heading += 360.0
-            }
+			heading := math.Mod(yawDeg, 360.0)
+			if heading < 0 {
+				heading += 360.0
+			}
 
-			// Print every 10th sample (10 Hz display)
+			// Print status
 			timestamp := time.Now().Format("15:04:05.00")
 			fmt.Printf("%s  %7.2f°  %7.2f°  %7.2f°  %7.2f°\r",
-			timestamp, rollDeg, pitchDeg, yawDeg, heading)
-            
-            // Get gyro rates (convert to deg/s)
-            rollRate := gyro[0] * 180.0 / math.Pi
-            pitchRate := gyro[1] * 180.0 / math.Pi
-            yawRate := gyro[2] * 180.0 / math.Pi
-            
-            publisher.UpdateData(rollDeg, pitchDeg, heading, rollRate, pitchRate, yawRate)
-            
-        case <-broadcastTicker.C:
-            // Broadcast to all connected clients
-            publisher.Broadcast()
+				timestamp, rollDeg, pitchDeg, yawDeg, heading)
+
+			// Get gyro rates (convert to deg/s)
+			rollRate := gyro[0] * 180.0 / math.Pi
+			pitchRate := gyro[1] * 180.0 / math.Pi
+			yawRate := gyro[2] * 180.0 / math.Pi
+
+			publisher.UpdateData(rollDeg, pitchDeg, heading, rollRate, pitchRate, yawRate)
+			
+			//lastGyro = gyro
+
+		case <-broadcastTicker.C:
+			// Broadcast to all connected clients
+			publisher.Broadcast()
 		}
 	}
 }
