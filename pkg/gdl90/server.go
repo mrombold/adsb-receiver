@@ -81,6 +81,10 @@ func (s *Server) Serve() error {
 				MakeStratuxHeartbeat(hasGPS, false),
 				MakeStratuxStatus(hasGPS, false),
 			}
+
+			//log.Printf("Heartbeat[%d] (%d bytes): % X", 1, len(heartbeatBundle[0]), heartbeatBundle[0])
+			//log.Printf("Heartbeat[%d] (%d bytes): % X", 2, len(heartbeatBundle[1]), heartbeatBundle[1])
+			//log.Printf("Heartbeat[%d] (%d bytes): % X", 3, len(heartbeatBundle[2]), heartbeatBundle[2])
 			
 			for _, msg := range heartbeatBundle {
 				if _, err := conn.WriteToUDP(msg, s.targetAddr); err != nil {
@@ -109,15 +113,15 @@ func (s *Server) Serve() error {
 					),
 					MakeOwnshipGeoAltitude(altHAEfeet),
 				}
-				
+				//log.Printf("Ownship[%d] (%d bytes): % X", 1, len(ownshipMsgs[0]), ownshipMsgs[0])
+				//log.Printf("Ownship[%d] (%d bytes): % X", 2, len(ownshipMsgs[0]), ownshipMsgs[0])
 				for _, msg := range ownshipMsgs {
 					if _, err := conn.WriteToUDP(msg, s.targetAddr); err != nil {
 						log.Printf("Error sending ownship: %v", err)
 					}
 				}
 				
-				//log.Printf("✓ Sent ownship: %.4f,%.4f @ %dft, %d°, %dkts",
-				//	pos.Lat, pos.Lon, altFeet, int(pos.Track), int(pos.Speed))
+				
 			} else {
 				log.Printf("✗ No valid position available")
 			}
@@ -146,6 +150,7 @@ func (s *Server) Serve() error {
 						ac.VertVel,
 						ac.Callsign,
 					)
+					//log.Printf("Traffic (%d bytes): % X", len(trafficMsg), trafficMsg)
 					
 					if _, err := conn.WriteToUDP(trafficMsg, s.targetAddr); err != nil {
 						log.Printf("Error sending traffic: %v", err)
@@ -162,7 +167,7 @@ func (s *Server) Serve() error {
 				for _, frame := range frames {
 					// Wrap raw UAT frame in GDL90 uplink message
 					weatherMsg := MakeUplinkData(frame)				
-					
+					//log.Printf("Weather (%d bytes): % X", len(weatherMsg), weatherMsg)
 					if _, err := conn.WriteToUDP(weatherMsg, s.targetAddr); err != nil {
 						log.Printf("Error sending weather: %v", err)
 					}
