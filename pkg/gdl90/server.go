@@ -6,7 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	
+
+	"adsb-receiver/pkg/ahrs"
 	"adsb-receiver/pkg/position"
 	"adsb-receiver/pkg/traffic"
 	"adsb-receiver/pkg/weather"
@@ -17,12 +18,13 @@ type Server struct {
 	trafficMgr  *traffic.Manager
 	positionMgr *position.Manager
 	weatherMgr  *weather.Manager
+	ahrsMgr     *ahrs.Manager
 	port        string
 	targetAddr  *net.UDPAddr
 }
 
 // NewServer creates a new GDL90 server
-func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, weatherMgr *weather.Manager, port string) *Server {
+func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, weatherMgr *weather.Manager, ahrsMgr *ahrs.Manager, port string) *Server {
 	// Target iPad/EFB at broadcast address
 	targetAddr, _ := net.ResolveUDPAddr("udp4", "192.168.10.255:4000")
 
@@ -30,6 +32,7 @@ func NewServer(trafficMgr *traffic.Manager, positionMgr *position.Manager, weath
 		trafficMgr:  trafficMgr,
 		positionMgr: positionMgr,
 		weatherMgr:  weatherMgr,
+		ahrsMgr:     ahrsMgr,
 		port:        port,
 		targetAddr:  targetAddr,
 	}
@@ -62,6 +65,10 @@ func (s *Server) Serve() error {
 	ownshipTicker := time.NewTicker(200 * time.Millisecond)
 	defer ownshipTicker.Stop()
 
+	// AHRS at 5 Hz (200ms) per ForeFlight recommendation
+	ahrsTicker := time.NewTicker(200 * time.Millisecond)
+	defer ahrsTicker.Stop()
+
 	trafficTicker := time.NewTicker(500 * time.Millisecond)
 	defer trafficTicker.Stop()
 
@@ -77,9 +84,9 @@ func (s *Server) Serve() error {
 			
 			// Send ALL heartbeat messages together - this is critical!
 			heartbeatBundle := [][]byte{
-				MakeHeartbeat(hasGPS, false),
-				MakeStratuxHeartbeat(hasGPS, false),
-				MakeStratuxStatus(hasGPS, false),
+				MakeHeartbeat(hasGPS, true),
+				MakeStratuxHeartbeat(hasGPS, true),
+				MakeStratuxStatus(hasGPS, true),
 			}
 
 			//log.Printf("Heartbeat[%d] (%d bytes): % X", 1, len(heartbeatBundle[0]), heartbeatBundle[0])
@@ -124,6 +131,22 @@ func (s *Server) Serve() error {
 				
 			} else {
 				log.Printf("✗ No valid position available")
+			}
+
+		case <-ahrsTicker.C:
+			// Send AHRS data if available
+			if ahrsData, ok := s.ahrsMgr.GetData(); ok {
+				// For now, we don't have airspeed data, so mark as invalid
+				ahrsMsg := MakeAHRS(
+					ahrsData.Roll,
+					ahrsData.Pitch,
+					ahrsData.Yaw, // This is heading (0-360)
+				)
+				//log.Printf("%v %v %v", ahrsData.Roll, ahrsData.Pitch, ahrsData.Yaw)
+				
+				if _, err := conn.WriteToUDP(ahrsMsg, s.targetAddr); err != nil {
+					log.Printf("Error sending AHRS: %v", err)
+				}
 			}
 
 		case <-trafficTicker.C:

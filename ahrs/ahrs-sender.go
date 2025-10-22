@@ -87,7 +87,7 @@ type AHRSPublisher struct {
 func NewMahonyAHRS(sampleFreq float64) *MahonyAHRS {
 	return &MahonyAHRS{
 		q:          Quaternion{W: 1.0, X: 0.0, Y: 0.0, Z: 0.0}, // Identity quaternion
-		kp:         2.0,  // Proportional gain (tune for response speed)
+		kp:         5.0,  // Proportional gain (tune for response speed)
 		ki:         0.01, // Integral gain (tune for drift compensation)
 		sampleFreq: sampleFreq,
 	}
@@ -543,7 +543,7 @@ func main() {
 	// Configuration
 	const (
 		sampleRate   = 100.0 // Hz
-		ahrsRate     = 5.0   // Hz (ForeFlight recommends 5Hz for AHRS)
+		ahrsRate     = 10.0   // Hz (ForeFlight recommends 5Hz for AHRS)
 		i2cBus       = "/dev/i2c-1"
 		useMag       = true  // Set to false for IMU-only (6DOF) mode
 	)
@@ -609,6 +609,11 @@ func main() {
 	}
 	fmt.Println("Press Ctrl+C to stop\n")
 
+	fmt.Println("Starting attitude estimation...")
+	fmt.Println("Press Ctrl+C to stop\n")
+	fmt.Println("Time        Roll      Pitch     Yaw       Heading")
+	fmt.Println("========    =======   =======   =======   =======")
+
 	for {
 		select {
 		case <-sigChan:
@@ -647,11 +652,16 @@ func main() {
             rollDeg := euler.Roll * 180.0 / math.Pi
             pitchDeg := euler.Pitch * 180.0 / math.Pi
             yawDeg := euler.Yaw * 180.0 / math.Pi
-            
+
             heading := math.Mod(yawDeg, 360.0)
             if heading < 0 {
                 heading += 360.0
             }
+
+			// Print every 10th sample (10 Hz display)
+			timestamp := time.Now().Format("15:04:05.00")
+			fmt.Printf("%s  %7.2f°  %7.2f°  %7.2f°  %7.2f°\r",
+			timestamp, rollDeg, pitchDeg, yawDeg, heading)
             
             // Get gyro rates (convert to deg/s)
             rollRate := gyro[0] * 180.0 / math.Pi

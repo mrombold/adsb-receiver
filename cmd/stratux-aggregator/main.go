@@ -6,6 +6,7 @@ import (
 	
 	"adsb-receiver/pkg/adsb1090"
 	"adsb-receiver/pkg/adsb978"
+	"adsb-receiver/pkg/ahrs"
 	"adsb-receiver/pkg/gdl90"
 	"adsb-receiver/pkg/gps"
 	"adsb-receiver/pkg/position"
@@ -21,12 +22,14 @@ func main() {
 	trafficMgr := traffic.NewManager()
 	positionMgr := position.NewManager()
 	weatherMgr := weather.NewManager()
+	ahrsMgr := ahrs.NewManager("/tmp/ahrs.sock")
 	
 	// Start manager goroutines
 	go trafficMgr.Run()
 	go positionMgr.Run()
 	go weatherMgr.Run()
-	
+	go ahrsMgr.Run()
+
 	// Create traffic clients
 	adsb1090Client := adsb1090.NewClient("localhost:30003")
 
@@ -52,8 +55,9 @@ func main() {
 	time.Sleep(2 * time.Second)
 	
 	// Create and start GDL90 server
-	gdl90Server := gdl90.NewServer(trafficMgr, positionMgr, weatherMgr, ":4000")
+	gdl90Server := gdl90.NewServer(trafficMgr, positionMgr, weatherMgr, ahrsMgr, ":4000")
 	
+
 	log.Println("GDL90 server starting...")
 	log.Fatal(gdl90Server.Serve())
 }

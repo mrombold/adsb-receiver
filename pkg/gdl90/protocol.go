@@ -13,6 +13,8 @@ const (
 	MsgTrafficReport      = 0x14
 	MsgUplinkData         = 0x07
 	MsgStratuxHeartbeat   = 0xCC
+	MsgAHRS               = 0x4C  // Stratux message
+	SubIDAHRS             = 0x45  // AHRS message
 )
 
 // prepareMessage adds CRC and frame delimiters
@@ -157,6 +159,103 @@ func MakeStratuxStatus(hasGPS, hasAHRS bool) []byte {
 }
 
 
+// MakeAHRS creates a ForeFlight AHRS message (0x65 0x01)
+// roll, pitch: in degrees (will be encoded as 0.1° units, range ±180°)
+// heading: in degrees (0-359.9, will be encoded as 0.1° units)
+// ias, tas: in knots (use 0x7FFF for invalid/unavailable)
+//
+// Per ForeFlight spec:
+// - Positive roll = right wing down
+// - Positive pitch = nose up
+// - Heading: 0=North, 90=East, 180=South, 270=West
+// - MSB of heading = 1 if magnetic heading
+// - Send at 5 Hz for best results
+func MakeAHRS(roll, pitch, heading float64) []byte {
+	msg := make([]byte, 24)
+	msg[0] = MsgAHRS          // 0x4C
+	msg[1] = SubIDAHRS        // 0x45
+	msg[2] = 0x01
+	msg[3] = 0x01
+	
+	// Clamp roll and pitch to ±180°
+	if roll > 180.0 {
+		roll = 180.0
+	} else if roll < -180.0 {
+		roll = -180.0
+	}
+	
+	if pitch > 180.0 {
+		pitch = 180.0
+	} else if pitch < -180.0 {
+		pitch = -180.0
+	}
+	
+	// Normalize heading to 0-360
+	for heading < 0 {
+		heading += 360.0
+	}
+	for heading >= 360.0 {
+		heading -= 360.0
+	}
+	
+	// Encode roll: signed int16, units of 0.1°
+	rollEncoded := int16(roll * 10.0)
+	msg[4] = byte((rollEncoded)>>8 & 0xFF)
+	msg[5] = byte(rollEncoded & 0xFF)
+
+		
+	// Encode pitch: signed int16, units of 0.1°
+	pitchEncoded := int16(pitch * 10.0)
+	msg[6] = byte((pitchEncoded)>>8 & 0xFF)
+	msg[7] = byte(pitchEncoded & 0xFF)
+	
+	// Encode heading: unsigned int16, units of 0.1°
+	// Set MSB = 1 for magnetic heading (we're using true heading, so MSB = 0)
+	headingEncoded := uint16(heading * 10.0)
+	msg[8] = byte((headingEncoded)>>8 & 0xFF)
+	msg[9] = byte(headingEncoded & 0xFF)
+	
+
+
+
+
+	slip_skid := uint16(0)
+	yaw_rate := uint16(0)
+	g := uint16(0)
+	airspeed := uint16(0)
+	palt := uint16(0)
+	vs := uint16(0)
+
+	// Slip/skid.
+	msg[10] = byte((slip_skid >> 8) & 0xFF)
+	msg[11] = byte(slip_skid & 0xFF)
+
+	// Yaw rate.
+	msg[12] = byte((yaw_rate >> 8) & 0xFF)
+	msg[13] = byte(yaw_rate & 0xFF)
+
+	// "G".
+	msg[14] = byte((g >> 8) & 0xFF)
+	msg[15] = byte(g & 0xFF)
+
+	// Indicated Airspeed
+	msg[16] = byte((airspeed >> 8) & 0xFF)
+	msg[17] = byte(airspeed & 0xFF)
+
+	// Pressure Altitude
+	msg[18] = byte((palt >> 8) & 0xFF)
+	msg[19] = byte(palt & 0xFF)
+
+	// Vertical Speed
+	msg[20] = byte((vs >> 8) & 0xFF)
+	msg[21] = byte(vs & 0xFF)
+
+	// Reserved
+	msg[22] = 0x7F
+	msg[23] = 0xFF
+
+	return prepareMessage(msg)
+}
 
 // MakeOwnshipReport creates an ownship position report (28 bytes)
 // lat, lon in degrees, altitude in ft (pressure alt), track in degrees from GPS, speed in knots from GPS
