@@ -40,6 +40,11 @@ tcpdump for playback later:
 sudo tcpdump -i lo -w dump978.pcap port 30978
 
 
+Look at log files of running daemons:
+on startup:   journalctl -u service-name
+follow real time:  journalctl -u service-name -f
+recent: journalctl -u service-name -n 500
+time:  journalctl -u service-name --since "10 minutes ago"
 
 
 AHRS/I2C:

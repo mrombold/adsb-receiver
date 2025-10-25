@@ -3,7 +3,10 @@ package gdl90
 import (
 	"encoding/binary"
 	"time"
+	"adsb-receiver/pkg/adsb1090"
+	"strconv"
 )
+
 
 // Message IDs
 const (
@@ -16,6 +19,7 @@ const (
 	MsgAHRS               = 0x4C  // Stratux message
 	SubIDAHRS             = 0x45  // AHRS message
 )
+
 
 // prepareMessage adds CRC and frame delimiters
 func prepareMessage(msg []byte) []byte {
@@ -34,6 +38,7 @@ func prepareMessage(msg []byte) []byte {
 	return escaped
 }
 
+
 // computeCRC calculates the GDL90 CRC
 func computeCRC(msg []byte) uint16 {
 	crc := uint16(0)
@@ -42,6 +47,7 @@ func computeCRC(msg []byte) uint16 {
 	}
 	return crc
 }
+
 
 // encodeLatLon encodes latitude or longitude as 24-bit two's complement
 // Per GDL90 spec: resolution = 180.0 / 2^23
@@ -55,6 +61,7 @@ func encodeLatLon(coord float64) [3]byte {
 		byte(val & 0xFF),
 	}
 }
+
 
 // MakeHeartbeat creates a standard GDL90 heartbeat message (7 bytes total)
 func MakeHeartbeat(hasGPS, hasAHRS bool) []byte {
@@ -89,6 +96,7 @@ func MakeHeartbeat(hasGPS, hasAHRS bool) []byte {
     return prepareMessage(msg)
 }
 
+
 // MakeStratuxHeartbeat creates a Stratux identification heartbeat
 func MakeStratuxHeartbeat(hasGPS, hasAHRS bool) []byte {
 	msg := []byte{MsgStratuxHeartbeat, 0}
@@ -104,6 +112,7 @@ func MakeStratuxHeartbeat(hasGPS, hasAHRS bool) []byte {
 	
 	return prepareMessage(msg)
 }
+
 
 // MakeStratuxStatus creates the extended Stratux status message
 func MakeStratuxStatus(hasGPS, hasAHRS bool) []byte {
@@ -257,6 +266,7 @@ func MakeAHRS(roll, pitch, heading float64) []byte {
 	return prepareMessage(msg)
 }
 
+
 // MakeOwnshipReport creates an ownship position report (28 bytes)
 // lat, lon in degrees, altitude in ft (pressure alt), track in degrees from GPS, speed in knots from GPS
 func MakeOwnshipReport(lat, lon float64, altitude, track, speed, vertvel int) []byte {
@@ -337,7 +347,6 @@ func MakeOwnshipReport(lat, lon float64, altitude, track, speed, vertvel int) []
 }
 
 
-
 // MakeOwnshipGeoAltitude creates ownship geometric altitude message (eight above WGS-84 ellipsoid)
 func MakeOwnshipGeoAltitude(altitude int) []byte {
 	msg := make([]byte, 5)
@@ -358,38 +367,43 @@ func MakeOwnshipGeoAltitude(altitude int) []byte {
 	return prepareMessage(msg)
 }
 
+
 // MakeTrafficReport creates a traffic report message (28 bytes)
-func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, vertvel int, callsign string) []byte {
+func MakeTrafficReport(ac adsb1090.Aircraft) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgTrafficReport
 	
 	// Alert status (bits 4-7) and address type (bits 0-3)
 	// 0x0 = no alert, ADS-B with ICAO address
-	msg[1] = 0x00
+	// Byte 1: Alert status (bits 4-7) and address type (bits 0-3)
+	// Bits 4-7: Traffic Alert Status (s)
+	msg[1] = (0x0 << 4) & 0xF0
+	msg[1] |= 0 & 0x0F
 	
 	// ICAO address (24 bits, bytes 2-4)
+	icao := parseICAO(ac.ICAO)
 	msg[2] = byte((icao >> 16) & 0xFF)
 	msg[3] = byte((icao >> 8) & 0xFF)
 	msg[4] = byte(icao & 0xFF)
 	
 	// Latitude (24-bit two's complement, bytes 5-7)
-	latBytes := encodeLatLon(lat)
+	latBytes := encodeLatLon(ac.Lat)
 	msg[5] = latBytes[0]
 	msg[6] = latBytes[1]
 	msg[7] = latBytes[2]
 	
 	// Longitude (24-bit two's complement, bytes 8-10)
-	lonBytes := encodeLatLon(lon)
+	lonBytes := encodeLatLon(ac.Lon)
 	msg[8] = lonBytes[0]
 	msg[9] = lonBytes[1]
 	msg[10] = lonBytes[2]
 	
 	// Altitude (12-bit): ((altitude_feet + 1000) / 25)
 	var altEncoded int16
-	if altitude < -1000 || altitude > 101350 {
+	if ac.Altitude < -1000 || ac.Altitude > 101350 {
 		altEncoded = 0xFFF
 	} else {
-		altEncoded = int16((altitude + 1000) / 25)
+		altEncoded = int16((ac.Altitude + 1000) / 25)
 		if altEncoded < 0 {
 			altEncoded = 0
 		}
@@ -401,14 +415,27 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, ve
 	msg[11] = byte((altEncoded >> 4) & 0xFF)
 	msg[12] = byte((altEncoded & 0x0F) << 4)
 	
-	// Misc byte (TT field)
-	msg[12] |= 0x09
+	// Msg 12 lower nibble
+	// Bit 3: 1=Airborne, 0=Ground
+	// Bit 2: 1=Extrapolated, 0=Updated
+	// Bit 1, 0: 00 = invalid, 01 = true trak, 10=hdg mag, 11=hdg true
+	if !ac.OnGround {
+    	msg[12] |= (1 << 3)
+	}
+	msg[12] |= 0 << 2  // report is updated
+	msg[12] |= 0b0001  // ground track / heading from ADS-B are true track
 	
-	// NIC and NACp
-	msg[13] = 0x88
+
+	// NIC and NAC not ouput from ADS-B dump1090.  Assume value is 9 for each
+	// Byte 13 (bits 4-7): NIC - Navigation Integrity Category (i)
+	msg[13] = (9 << 4) & 0xF0
+	
+	// Byte 13 (bits 0-3): NACp - Navigation Accuracy Category for Position (a)
+	msg[13] |= 9 & 0x0F
+
 	
 	// Horizontal velocity (12-bit)
-	speedEncoded := uint16(speed)
+	speedEncoded := uint16(ac.Speed)
 	if speedEncoded > 0xFFE {
 		speedEncoded = 0xFFE
 	}
@@ -419,13 +446,12 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, ve
 	// 0x800 for no vertical rate info available
 	// Field spans: upper 4 bits of msg[15] and all 8 bits of msg[16]
 
-	if vertvel == 0 { // or however you detect "no data available"
-		// No vertical rate available
+	if !ac.HasVertVel { 
 		msg[15] |= 0x08
 		msg[16] = 0x00
 	} else {
 		// Encode as signed 12-bit value in units of 64 fpm
-		vvEncoded := int16(vertvel / 64)
+		vvEncoded := int16(ac.VertVel / 64)
 		
 		// Clamp to valid range: -510 to +509 (0xE02 to 0x1FD in the spec)
 		if vvEncoded > 509 {
@@ -442,14 +468,15 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, ve
 	}
 	
 	// Track (8 bits) - track/1.40625   (track / (360/256))
-	trackEncoded := uint8(float64(track) / 1.40625)
+	trackEncoded := uint8(float64(ac.Track) / 1.40625)
 	msg[17] = trackEncoded
 	
-	// Emitter category
-	msg[18] = 1
+
+	// Byte 18: Emitter category (ee)
+	msg[18] = 0x01  // dump1090 doesn't provide emitter category
 	
 	// Callsign (8 bytes, space-padded)
-	cs := callsign
+	cs := ac.Callsign
 	if len(cs) > 8 {
 		cs = cs[:8]
 	}
@@ -458,8 +485,21 @@ func MakeTrafficReport(icao uint32, lat, lon float64, altitude, track, speed, ve
 	}
 	copy(msg[19:27], cs)
 	
-	// Emergency status
-	msg[27] = 0
+    // Byte 27: Emergency/Priority code
+    if ac.Emergency {
+        switch ac.Squawk {
+        case "7700":
+            msg[27] = 1  // General emergency
+        case "7600":
+            msg[27] = 4  // No communications
+        case "7500":
+            msg[27] = 5  // Unlawful interference
+        default:
+            msg[27] = 1  // General emergency
+        }
+    } else {
+        msg[27] = 0  // No emergency
+    }
 	
 	return prepareMessage(msg)
 }
@@ -480,7 +520,6 @@ func MakeUplinkData(uatFrame []byte) []byte {
 	
 	return prepareMessage(msg)
 }
-
 
 
 // CRC lookup table (same as C reference)
@@ -517,4 +556,14 @@ var crcTable = [256]uint16{
 	0x7c26, 0x6c07, 0x5c64, 0x4c45, 0x3ca2, 0x2c83, 0x1ce0, 0x0cc1,
 	0xef1f, 0xff3e, 0xcf5d, 0xdf7c, 0xaf9b, 0xbfba, 0x8fd9, 0x9ff8,
 	0x6e17, 0x7e36, 0x4e55, 0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0,
+}
+
+
+// parseICAO converts hex string ICAO address to uint32
+// Example: "AB4549" -> 0xAB4549 (11223369 decimal)
+func parseICAO(icaoHex string) uint32 {
+    if icao, err := strconv.ParseUint(icaoHex, 16, 32); err == nil {
+        return uint32(icao)
+    }
+    return 0
 }

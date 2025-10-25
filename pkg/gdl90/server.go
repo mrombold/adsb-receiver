@@ -3,8 +3,6 @@ package gdl90
 import (
 	"log"
 	"net"
-	"strconv"
-	"strings"
 	"time"
 
 	"adsb-receiver/pkg/ahrs"
@@ -101,15 +99,16 @@ func (s *Server) Serve() error {
 			
 
 		case <-ownshipTicker.C:
-			// Send ownship position if available
+			// ALWAYS send ownship - required for EFB recognition
+			var ownshipMsgs [][]byte
+			
 			if pos, ok := s.positionMgr.GetPosition(); ok {
-
 				// Convert meters to feet
 				altFeet := int(pos.Altitude * 3.28084)
 				altHAEfeet := int(pos.AltitudeHAE * 3.28084)
 				
-				// Send both ownship messages
-				ownshipMsgs := [][]byte{
+				// Send valid position
+				ownshipMsgs = [][]byte{
 					MakeOwnshipReport(
 						pos.Lat, 
 						pos.Lon, 
@@ -120,33 +119,47 @@ func (s *Server) Serve() error {
 					),
 					MakeOwnshipGeoAltitude(altHAEfeet),
 				}
-				//log.Printf("Ownship[%d] (%d bytes): % X", 1, len(ownshipMsgs[0]), ownshipMsgs[0])
-				//log.Printf("Ownship[%d] (%d bytes): % X", 2, len(ownshipMsgs[0]), ownshipMsgs[0])
-				for _, msg := range ownshipMsgs {
-					if _, err := conn.WriteToUDP(msg, s.targetAddr); err != nil {
-						log.Printf("Error sending ownship: %v", err)
-					}
-				}
-				
-				
 			} else {
-				log.Printf("✗ No valid position available")
+				// No GPS - send invalid position (all zeros)
+				// This is REQUIRED for EFB to recognize the device!
+				ownshipMsgs = [][]byte{
+					MakeOwnshipReport(
+						0.0,   // Invalid lat
+						0.0,   // Invalid lon
+						0,     // Invalid altitude
+						0,     // Invalid track
+						0,     // Invalid speed
+						0,     // Invalid vertical velocity
+					),
+					MakeOwnshipGeoAltitude(0),  // Invalid geo altitude
+				}
+			}
+			
+			// Send the messages
+			for _, msg := range ownshipMsgs {
+				if _, err := conn.WriteToUDP(msg, s.targetAddr); err != nil {
+					log.Printf("Error sending ownship: %v", err)
+				}
 			}
 
 		case <-ahrsTicker.C:
 			// Send AHRS data if available
+			var ahrsMsg []byte
+			
 			if ahrsData, ok := s.ahrsMgr.GetData(); ok {
-				// For now, we don't have airspeed data, so mark as invalid
-				ahrsMsg := MakeAHRS(
+				// Valid AHRS data
+				ahrsMsg = MakeAHRS(
 					ahrsData.Roll,
 					ahrsData.Pitch,
 					ahrsData.Yaw, // This is heading (0-360)
 				)
-				//log.Printf("%v %v %v", ahrsData.Roll, ahrsData.Pitch, ahrsData.Yaw)
-				
-				if _, err := conn.WriteToUDP(ahrsMsg, s.targetAddr); err != nil {
-					log.Printf("Error sending AHRS: %v", err)
-				}
+			} else {
+				// No AHRS - send default/invalid data
+				ahrsMsg = MakeAHRS(0, 0, 0)  // Note: capital A in MakeAHRS
+			}
+			
+			if _, err := conn.WriteToUDP(ahrsMsg, s.targetAddr); err != nil {
+				log.Printf("Error sending AHRS: %v", err)
 			}
 
 		case <-trafficTicker.C:
@@ -154,25 +167,8 @@ func (s *Server) Serve() error {
 			aircraft := s.trafficMgr.GetAircraft()
 			
 			if len(aircraft) > 0 {
-				for _, ac := range aircraft {
-					// Skip aircraft without position
-					if ac.Lat == 0 && ac.Lon == 0 {
-						continue
-					}
-					
-					// Parse ICAO from hex string
-					icao := parseICAO(ac.ICAO)
-					
-					trafficMsg := MakeTrafficReport(
-						icao,
-						ac.Lat,
-						ac.Lon,
-						ac.Altitude,
-						ac.Track,
-						ac.Speed,
-						ac.VertVel,
-						ac.Callsign,
-					)
+				for _, ac := range aircraft {				
+					trafficMsg := MakeTrafficReport(ac)
 					//log.Printf("Traffic (%d bytes): % X", len(trafficMsg), trafficMsg)
 					
 					if _, err := conn.WriteToUDP(trafficMsg, s.targetAddr); err != nil {
@@ -200,10 +196,4 @@ func (s *Server) Serve() error {
 			}
 		}
 	}
-}
-
-// parseICAO converts hex ICAO string to uint32
-func parseICAO(icaoHex string) uint32 {
-	icao, _ := strconv.ParseUint(strings.TrimSpace(icaoHex), 16, 32)
-	return uint32(icao)
 }

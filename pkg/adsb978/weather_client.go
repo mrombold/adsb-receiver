@@ -28,7 +28,6 @@ func (c *WeatherClient) Read() error {
 	for {
 		conn, err := net.Dial("tcp", c.addr)
 		if err != nil {
-			log.Printf("dump978 weather connection failed: %v, retrying in 5s", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -76,7 +75,6 @@ func (c *WeatherClient) Read() error {
 		}
 
 		conn.Close()
-		log.Printf("Disconnected from dump978 weather, reconnecting...")
 		time.Sleep(2 * time.Second)
 	}
 }

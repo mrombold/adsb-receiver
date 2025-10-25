@@ -3,22 +3,21 @@ package traffic
 import (
 	"sync"
 	"time"
-	
-	"adsb-receiver/pkg/adsb1090"
+	"adsb-receiver/pkg/types"
 )
 
 // Manager manages aircraft traffic state
 type Manager struct {
-	aircraft map[string]*adsb1090.Aircraft
+	aircraft map[string]*types.Aircraft
 	mu       sync.RWMutex
-	updates  chan adsb1090.Aircraft
+	updates  chan types.Aircraft
 }
 
 // NewManager creates a new traffic manager
 func NewManager() *Manager {
 	return &Manager{
-		aircraft: make(map[string]*adsb1090.Aircraft),
-		updates:  make(chan adsb1090.Aircraft, 100),
+		aircraft: make(map[string]*types.Aircraft),
+		updates:  make(chan types.Aircraft, 100),
 	}
 }
 
@@ -59,6 +58,21 @@ func (m *Manager) Run() {
 				if update.HasVertVel {
 					ac.VertVel = update.VertVel
 				}
+				if update.HasSquawk {
+					ac.Squawk = update.Squawk
+				}
+				if update.HasEmergency {
+					ac.Emergency = update.Emergency
+				}
+				if update.HasAlert {
+					ac.Alert = update.Alert
+				}
+				if update.HasSPI {
+					ac.SPI = update.SPI
+				}
+				if update.HasOnGround {
+					ac.OnGround = update.OnGround
+				}
 
 				// Always update timestamp
 				ac.Timestamp = update.Timestamp
@@ -80,16 +94,16 @@ func (m *Manager) Run() {
 }
 
 // Updates returns the channel for sending aircraft updates
-func (m *Manager) Updates() chan<- adsb1090.Aircraft {
+func (m *Manager) Updates() chan<- types.Aircraft {
 	return m.updates
 }
 
 // GetAircraft returns a snapshot of all aircraft
-func (m *Manager) GetAircraft() []adsb1090.Aircraft {
+func (m *Manager) GetAircraft() []types.Aircraft {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	
-	list := make([]adsb1090.Aircraft, 0, len(m.aircraft))
+	list := make([]types.Aircraft, 0, len(m.aircraft))
 	for _, ac := range m.aircraft {
 		list = append(list, *ac)
 	}

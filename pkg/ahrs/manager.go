@@ -43,7 +43,6 @@ func (m *Manager) Run() {
 		// Try to connect
 		conn, err := net.Dial("unix", m.socketPath)
 		if err != nil {
-			log.Printf("AHRS: Waiting for socket %s: %v", m.socketPath, err)
 			time.Sleep(2 * time.Second)
 			continue
 		}

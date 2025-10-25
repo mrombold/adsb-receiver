@@ -97,7 +97,6 @@ func (c *Client) Read(updates chan<- Position) error {
         }
         
         conn.Close()
-        log.Printf("Disconnected from gpsd, reconnecting...")
         time.Sleep(2 * time.Second)
     }
 }
