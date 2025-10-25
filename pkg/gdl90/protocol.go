@@ -3,7 +3,7 @@ package gdl90
 import (
 	"encoding/binary"
 	"time"
-	"adsb-receiver/pkg/adsb1090"
+	"adsb-receiver/pkg/types"
 	"strconv"
 )
 
@@ -369,7 +369,7 @@ func MakeOwnshipGeoAltitude(altitude int) []byte {
 
 
 // MakeTrafficReport creates a traffic report message (28 bytes)
-func MakeTrafficReport(ac adsb1090.Aircraft) []byte {
+func MakeTrafficReport(ac types.Aircraft) []byte {
 	msg := make([]byte, 28)
 	msg[0] = MsgTrafficReport
 	

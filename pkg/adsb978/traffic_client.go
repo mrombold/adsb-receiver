@@ -130,7 +130,7 @@ func (c *TrafficClient) Read() error {
 
 			// Emergency status
 			if msg.Emergency != "" && msg.Emergency != "none" {
-				ac.Emergency = msg.Emergency
+				ac.Emergency = true
 				ac.HasEmergency = true
 			}
 

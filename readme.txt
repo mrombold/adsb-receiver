@@ -55,3 +55,11 @@ source ~/adsb-receiver/venv/bin/activate
 
 go run simple_sensor_read.go
 
+
+
+
+
+
+
+replay 
+
