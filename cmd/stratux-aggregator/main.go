@@ -22,22 +22,22 @@ func main() {
 	trafficMgr := traffic.NewManager()
 	positionMgr := position.NewManager()
 	weatherMgr := weather.NewManager()
-	ahrsMgr := ahrs.NewManager("/tmp/ahrs.sock")
+	//ahrsMgr := ahrs.NewManager("/tmp/ahrs.sock")
 	
 	// Start manager goroutines
 	go trafficMgr.Run()
 	go positionMgr.Run()
 	go weatherMgr.Run()
-	go ahrsMgr.Run()
+	//go ahrsMgr.Run()
 
 	// Create traffic clients
 	adsb1090Client := adsb1090.NewClient("localhost:30003")
 
 	// For traffic (JSON)
-	adsb978TrafficClient := adsb978.NewTrafficClient("localhost:30979", trafficMgr.Updates())
+	adsb978TrafficClient := adsb978.NewTrafficClient("localhost:30979")
 
 	// For weather (raw frames)
-	adsb978WeatherClient := adsb978.NewWeatherClient("localhost:30978", weatherMgr.Updates())
+	adsb978WeatherClient := adsb978.NewWeatherClient("localhost:30978")
 
 	gpsClient := gps.NewClient("localhost:2947")
 	
@@ -45,8 +45,8 @@ func main() {
 	go adsb1090Client.Read(trafficMgr.Updates())
 
 	// Start reading from dump978 (sends to both traffic and weather managers)
-	go adsb978TrafficClient.Read()  // Traffic
-	go adsb978WeatherClient.Read()  // Weather
+	go adsb978TrafficClient.Read(trafficMgr.Updates())  // Traffic
+	go adsb978WeatherClient.Read(weatherMgr.Updates())  // Weather
 	
 	// Start reading from gpsd
 	go gpsClient.Read(positionMgr.Updates())
